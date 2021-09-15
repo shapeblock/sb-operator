@@ -1,0 +1,62 @@
+apiVersion: dev.shapeblock.com/v1alpha1
+kind: Application
+metadata:
+  name: application-sample
+spec:
+  # Add fields here
+  tag: registry.indigo-dev.dev.indigo-consulting.co.in/hinduja-uat:13-09-2021.3
+  git:
+    repo: git@bitbucket.org:indigo-devops/ujjivan-cms.git
+    ref: 7e03ac3ff4c933fe57b0920f18200b620a7304e0
+  chart:
+    repo: https://shapeblock.github.io
+    name: drupal
+    version: "0.4.1"
+    values: |
+      autoscaling:
+        enabled: false
+      backup:
+        enabled: false
+      clusterDomain: dev.indigo-consulting.co.in
+      docroot: web
+      elasticsearch:
+        enabled: false
+      imagePullSecrets:
+      - name: registry-creds
+      mailhog:
+        enabled: false
+      mariadb:
+        db:
+          name: drupal
+          password: drupal
+          user: drupal
+        master:
+          persistence:
+            size: 2G
+        volumePermissions:
+          enabled: true
+      memcached:
+        enabled: false
+      mounts:
+        public-files:
+          csiDriverName: null
+          enabled: true
+          mountPath: sites/default/files
+          storage: 1G
+          storageClassName: nfs
+      nginx:
+        basicauth:
+          enabled: false
+        image: bitnami/nginx:1.19
+      php:
+        image: registry.indigo-dev.dev.indigo-consulting.co.in/hinduja-uat:13-09-2021.3
+      referenceData:
+        enabled: false
+      replicas: 1
+      shell:
+        enabled: false
+      ssl:
+        enabled: true
+      varnish:
+        enabled: false
+

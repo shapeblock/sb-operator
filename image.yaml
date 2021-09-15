@@ -1,0 +1,18 @@
+apiVersion: kpack.io/v1alpha1
+kind: Image
+metadata:
+  annotations:
+  name: "{name}"
+spec:
+  builder:
+    kind: Builder
+    name: "{builder_name}"
+  cacheSize: 2G
+  failedBuildHistoryLimit: 10
+  imageTaggingStrategy: BuildNumber
+  serviceAccount: "{service_account}"
+  source:
+    git:
+      revision: "{ref}"
+      url: "{repo}"
+  tag: "{tag}"

@@ -1,0 +1,20 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sb-operator
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      application: sb-operator
+  template:
+    metadata:
+      labels:
+        application: sb-operator
+    spec:
+      serviceAccountName: sb-admin
+      containers:
+      - name: sb-operator
+        image: shapeblock/sb-operator:__VERSION__
