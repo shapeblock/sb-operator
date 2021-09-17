@@ -5,6 +5,15 @@ from kubernetes import client
 import yaml
 from kubernetes.client.rest import ApiException
 
+
+@kopf.on.create('projects')
+def create_project(spec, name, logger, **kwargs):
+    logger.info(f"A project is created with spec: {spec}")
+    logger.info(f"Create a namespace")
+    logger.info(f"Create registry credentials")
+    logger.info(f"Create a service account and attach secrets to that")
+
+
 @kopf.on.create('applications')
 def create_app(spec, name, namespace, logger, **kwargs):
     logger.info(f"An application is created with spec: {spec}")
@@ -67,13 +76,17 @@ def create_app(spec, name, namespace, logger, **kwargs):
             logger.info("Image created.")
 
 @kopf.on.create('kpack.io', 'v1alpha1', 'builds')
-def update_build(spec, status, namespace, logger, **kwargs):
+def create_build(spec, status, name, namespace, logger, **kwargs):
     logger.info(f"Create handler for build with status: {status}")
-    # create helmrelease.
+    if status.get('type') == 'Succeeded' and status.get('status') == 'True':
+        tag = spec.get('tags')[1]
+        logger.info(f"New image created: {tag}")
+        # create helmrelease.
+        create_helmrelease(name, namespace, tag, logger)
 
 
 @kopf.on.field('kpack.io', 'v1alpha1', 'builds', field='status.conditions')
-def trigger_helm_release(old, new, logger, **kwargs):
+def trigger_helm_release(new, logger, **kwargs):
     logger.info(f"Update handler for build with status: {new}")
 
 
@@ -132,15 +145,59 @@ def delete_app(spec, name, namespace, logger, **kwargs):
     # delete volumes if any
     # send notification
 
-# on create of projects
-#   create namespace
-#   create roles(??)
 
 # on delete of project
 
 @kopf.on.startup()
 def startup_fn(logger, **kwargs):
     logger.info("install helmrelease")
-    logger.info("install ingress, cert, registry, kpack")
+    logger.info("install ingress, cert, registry, kpack, nfs")
 
 # daemon to update kpack base images
+
+
+def create_helmrelease(name, namespace, tag, logger):
+    api = client.CustomObjectsApi()
+    app = api.get_namespaced_custom_object(
+        group="helm.fluxcd.io",
+        version="v1",
+        name=name,
+        namespace=namespace,
+        plural="helmreleases",
+    )
+    spec = app.spec
+    logger.info("App spec: {spec}.")
+    try:
+        resource = api.get_namespaced_custom_object(
+            group="helm.fluxcd.io",
+            version="v1",
+            name=name,
+            namespace=namespace,
+            plural="helmreleases",
+        )
+        logger.info("Helm Release exists.")
+    except ApiException as error:
+        if error.status == 404:
+            chart_info = spec.get('chart')
+            chart_name = chart_info.get('name')
+            chart_repo = chart_info.get('repo')
+            chart_version = chart_info.get('version')
+            chart_values = chart_info.get('values')
+            path = os.path.join(os.path.dirname(__file__), 'helmrelease.yaml')
+            tmpl = open(path, 'rt').read()
+            text = tmpl.format(name=name, 
+                            tag=tag,
+                            chart_name=chart_name,
+                            chart_repo=chart_repo,
+                            chart_version=chart_version,
+                            )
+            data = yaml.safe_load(text)
+            data['spec']['chart']['values'] = yaml.safe_load(chart_values)
+            response = api.create_namespaced_custom_object(
+                group="helm.fluxcd.io",
+                version="v1",
+                namespace=namespace,
+                plural="helmreleases",
+                body=data,
+            )
+            logger.info("Helmrelease created.")

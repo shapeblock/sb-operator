@@ -15,6 +15,38 @@ spec:
         application: sb-operator
     spec:
       serviceAccountName: sb-admin
+      initContainers:
+      - name: kubectl-container
+        image: shapeblock/sb-operator-init:0.0.1
+        env:
+          - name: FLUX_HELM_OPERATOR_VERSION
+            value: "1.4.0"
+          - name: NGINX_INGRESS_VERSION
+            value: "7.6.19"
+          - name: CLUSTER_NAME
+            value: "little-bird-ae3c"
+          - name: CERT_MANAGER_VERSION
+            value: "v1.5.2"
+          - name: KPACK_VERSION
+            value: "0.3.1"
+          - name: NFS_VERSION
+            value: "1.3.0"
+          - name: CONTAINER_REGISTRY_VERSION
+            value: "1.12.0"
+          - name: NFS_SIZE
+            value: "80Gi"
+          - name: REGISTRY_SIZE
+            value: "20Gi"
+          - name: REGISTRY_URL
+            value: "registry.little-bird-ae3c"
+          - name: REGISTRY_PASSWORD
+            value: "$2y$10$8Wjc9xlzoRnrlsK.RKULZuexrEwVliSKxI7dj92u.QQM7I4T6acVS"
+          - name: REGISTRY_USERNAME
+            value: "little-bird-ae3c-admin"
+          - name: REGISTRY_CREDENTIALS
+            value: "bGl0dGxlLWJpcmQtYWUzYy1hZG1pbjplQj9ydEs+akBpTGRfVSs1R3k5PTw8UDUyRzMK"
+          - name: LETSENCRYPT_EMAIL
+            value: lakshmi@lakshminp.com
       containers:
       - name: sb-operator
         image: shapeblock/sb-operator:__VERSION__

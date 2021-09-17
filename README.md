@@ -16,3 +16,43 @@
 5. Clean up stuff on app delete
 6. Clean up stuff on project delete
 7. Clean up stuff on uninstall SB.
+8. Add appropriate labels to all the artefacts.
+
+
+## Others
+
+1. resize registry
+2. resize nfs
+3. upgrade versions
+4. add ssh to app
+5. add registry management credentials to cluster
+
+## Architecture
+
+1. Installation of helm release, ingress, cert, registry, kpack, nfs using init container.
+2. The parameters for this will be controlled by env vars to the init container.
+3. Boot the actual operator pod which will be a shiv compiled binary.
+
+## Ideal deployment
+
+Roll up the following:
+1. application and project CRDs.
+2. SB admin sa with cluster-admin role.
+3. Create a new SB namespace.
+4. Operator deployment.
+
+into a single file.
+
+Deploy the file on a fresh cluster.
+
+```
+echo "eB?rtK>j@iLd_U+5Gy9=<<P52G3" | htpasswd -bnBC 10 "" - | tr -d ':\n' # REGISTRY_PASSWORD
+echo "little-bird-ae3c-admin:eB?rtK>j@iLd_U+5Gy9=<<P52G3" | base64 # REGISTRY_CREDENTIALS
+```
+
+
+
+```
+docker build --file Dockerfile.kubectl -t shapeblock/sb-operator-init:0.0.1 .
+docker push shapeblock/sb-operator-init:0.0.1
+```

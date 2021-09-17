@@ -1,0 +1,7 @@
+apiVersion: dev.shapeblock.com/v1alpha1
+kind: Project
+metadata:
+  name: drupal-8
+spec:
+  name: Drupal 8
+  description: Testing Drupal 8 webapp.

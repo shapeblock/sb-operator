@@ -1,0 +1,9 @@
+apiVersion: helm.fluxcd.io/v1
+kind: HelmRelease
+metadata:
+  name: "{name}"
+spec:
+  chart:
+    name: "{chart_name}"
+    repository: "{chart_repo}"
+    version: "{chart_version}"
