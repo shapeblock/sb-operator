@@ -17,7 +17,8 @@ spec:
       serviceAccountName: sb-admin
       initContainers:
       - name: kubectl-container
-        image: shapeblock/sb-operator-init:0.0.1
+        image: shapeblock/sb-operator-init:0.0.9
+        command: ["/opt/bitnami/project/install-deps.sh"]
         env:
           - name: FLUX_HELM_OPERATOR_VERSION
             value: "1.4.0"

@@ -1,9 +1,13 @@
-#!/usr/bin/env bash
+#!/usr/bin/env bash -x
 
-#TODO
+# TODO
 # 1. Send status after every step to SB.
-# 2. Move DNS to SB.
+# 2. Move DNS to SB. - done
 # 3. Have temp files for everything.
+
+if [ -n "$INSTALLED" ]; then
+  exit 0
+fi
 
 # Flux helm operator
 kubectl create namespace flux --dry-run=client -o yaml | kubectl apply -f -
@@ -11,50 +15,13 @@ kubectl apply -f https://raw.githubusercontent.com/fluxcd/helm-operator/v${FLUX_
 helm upgrade -i helm-operator fluxcd/helm-operator --version="${FLUX_HELM_OPERATOR_VERSION}" --set helm.versions=v3 --set rbac.create=true -n flux --wait
 
 # nginx ingress
-kubectl create namespace ingress-nginx --dry-run=client -o yaml | kubectl apply -f -
-helm upgrade --install ingress-nginx bitnami/nginx-ingress-controller --version="${NGINX_INGRESS_VERSION}" -n ingress-nginx --wait 
+kubectl create namespace nginx-ingress --dry-run=client -o yaml | kubectl apply -f -
+helm upgrade --install nginx-ingress bitnami/nginx-ingress-controller --version="${NGINX_INGRESS_VERSION}" -n nginx-ingress --wait 
 
 # both these steps should be ideally moved to cloud.
 # set sb cloud A record
 
-ingress_ip=$(kubectl get svc nginx-ingress-nginx-ingress-controller -n ingress-nginx -o yaml  | yj | jq -r '.status.loadBalancer.ingress[0].ip')
-generate_post_data()
-{
-cat <<EOF
-{
-    "name": "$CLUSTER_NAME",
-    "type": "A",
-    "content": "$ingress_ip"
-}
-EOF
-}
-curl  -H 'Authorization: Bearer TLK9gsTiCT2LuDTwABaiDXzUuA2BTgls' \
-        -H 'Accept: application/json' \
-        -H 'Content-Type: application/json' \
-        -X POST \
-        https://api.dnsimple.com/v2/88397/zones/shapeblock.cloud/records \
-        --data-raw "$(generate_post_data)"
-
-
-# set sb cloud CNAME record
-
-generate_post_data_cname()
-{
-cat <<EOF
-{
-    "name": "*.$CLUSTER_NAME",
-    "type": "CNAME",
-    "content": "$CLUSTER_NAME.shapeblock.cloud"
-}
-EOF
-}
-curl  -H 'Authorization: Bearer TLK9gsTiCT2LuDTwABaiDXzUuA2BTgls' \
-        -H 'Accept: application/json' \
-        -H 'Content-Type: application/json' \
-        -X POST \
-        https://api.dnsimple.com/v2/88397/zones/shapeblock.cloud/records \
-        --data-raw "$(generate_post_data_cname)"
-
+ingress_ip=$(kubectl get svc nginx-ingress-nginx-ingress-controller -n nginx-ingress -o yaml  | yj | jq -r '.status.loadBalancer.ingress[0].ip')
 
 # cert manager
 kubectl create namespace cert-manager --dry-run=client -o yaml | kubectl apply -f -
@@ -68,14 +35,14 @@ metadata:
     name: letsencrypt-prod
 spec:
     acme:
-    email: $LETSENCRYPT_EMAIL
-    server: https://acme-v02.api.letsencrypt.org/directory
-    privateKeySecretRef:
-        name: letsencrypt-secret-prod
-    solvers:
-    - http01:
-        ingress:
-            class: nginx
+        email: $LETSENCRYPT_EMAIL
+        server: https://acme-v02.api.letsencrypt.org/directory
+        privateKeySecretRef:
+            name: letsencrypt-secret-prod
+        solvers:
+        - http01:
+            ingress:
+                class: nginx
 EOF
 kubectl apply -f cert-issuer.yml
 
@@ -91,9 +58,9 @@ metadata:
 spec:
     id: "io.buildpacks.stacks.bionic"
     buildImage:
-    image: "paketobuildpacks/build:full-cnb"
+        image: "paketobuildpacks/build:full-cnb"
     runImage:
-    image: "paketobuildpacks/run:full-cnb"
+        image: "paketobuildpacks/run:full-cnb"
 EOF
 kubectl apply -f stack.yml
 
@@ -120,7 +87,7 @@ persistence:
     size: $NFS_SIZE
 EOF
 
-helm upgrade --install nfs-server nfs-server-provisioner  --version="${NFS_VERSION}" --values=/tmp/nfs-values.yml -n default --wait
+helm upgrade --install nfs-server raphael/nfs-server-provisioner  --version="${NFS_VERSION}" --values=/tmp/nfs-values.yml -n default --wait
 
 # registry
 bcrypt='$REGISTRY_PASSWORD'
@@ -131,19 +98,19 @@ persistence:
 ingress:
     enabled: true
     hosts:
-    - $REGISTRY_URL
-    tls:
-    - secretName: registry-tls
-        hosts:
         - $REGISTRY_URL
+    tls:
+        - secretName: registry-tls
+          hosts:
+            - $REGISTRY_URL
     annotations:
-    kubernetes.io/ingress.class: nginx
-    cert-manager.io/cluster-issuer: letsencrypt-prod
-    nginx.ingress.kubernetes.io/proxy-body-size: 0
+        kubernetes.io/ingress.class: nginx
+        cert-manager.io/cluster-issuer: letsencrypt-prod
+        nginx.ingress.kubernetes.io/proxy-body-size: 0
 secrets:
     htpasswd: "$REGISTRY_USERNAME:$bcrypt"
 EOF
-helm upgrade --install docker-registry docker-registry --version="${CONTAINER_REGISTRY_VERSION}" --values=/tmp/registry-values.yml -n default --wait
+helm upgrade --install docker-registry twuni/docker-registry --version="${CONTAINER_REGISTRY_VERSION}" --values=/tmp/registry-values.yml -n default --wait
 
 # add registry creds
 cat > /tmp/dockerconfig.json << EOF

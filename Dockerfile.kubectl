@@ -7,7 +7,7 @@ RUN wget https://get.helm.sh/helm-v3.5.4-linux-amd64.tar.gz -qO - | tar xz --str
 
 RUN mkdir /opt/bitnami/project
 
-ADD install-deps.sh /opt/bitnami/project/
+COPY install-deps.sh /opt/bitnami/project/
 
 ENV HELM_CONFIG_HOME=/opt/bitnami/helm/config
 ENV HELM_CACHE_HOME=/opt/bitnami/helm/cache
@@ -21,4 +21,5 @@ RUN helm repo add raphael https://raphaelmonrouzeau.github.io/charts/repository/
 
 RUN helm repo update
 WORKDIR /opt/bitnami/project
-CMD ["install-deps.sh"]
+ENTRYPOINT []
+CMD []
