@@ -150,11 +150,11 @@ def delete_app(spec, name, namespace, logger, **kwargs):
 
 @kopf.on.startup()
 def startup_fn(logger, **kwargs):
-    logger.info("install helmrelease")
-    logger.info("install ingress, cert, registry, kpack, nfs")
+    logger.info("check if helm release, ingress, cert, registry, kpack, nfs are installed.")
+    logger.info("send notification to SB.")
 
 # daemon to update kpack base images
-
+# daemon to send status to SB every x hrs
 
 def create_helmrelease(name, namespace, tag, logger):
     api = client.CustomObjectsApi()
