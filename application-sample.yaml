@@ -1,13 +1,14 @@
 apiVersion: dev.shapeblock.com/v1alpha1
 kind: Application
 metadata:
-  name: application-sample
+  name: d9-01
+  namespace: drupal-9
 spec:
   # Add fields here
-  tag: registry.indigo-dev.dev.indigo-consulting.co.in/hinduja-uat:13-09-2021.3
+  tag: registry.little-bird-ae3c.shapeblock.cloud/drupal-9/d9-01
   git:
-    repo: git@bitbucket.org:indigo-devops/ujjivan-cms.git
-    ref: 7e03ac3ff4c933fe57b0920f18200b620a7304e0
+    repo: https://github.com/badri/d9-buildpack.git
+    ref: 710728a7a127cf5727388222a16c3f4c90159fdb
   chart:
     repo: https://shapeblock.github.io
     name: drupal
@@ -17,7 +18,7 @@ spec:
         enabled: false
       backup:
         enabled: false
-      clusterDomain: dev.indigo-consulting.co.in
+      clusterDomain: little-bird-ae3c.shapeblock.cloud
       docroot: web
       elasticsearch:
         enabled: false
@@ -49,7 +50,7 @@ spec:
           enabled: false
         image: bitnami/nginx:1.19
       php:
-        image: registry.indigo-dev.dev.indigo-consulting.co.in/hinduja-uat:13-09-2021.3
+        image: registry.little-bird-ae3c.shapeblock.cloud/drupal-9/d9-01
       referenceData:
         enabled: false
       replicas: 1

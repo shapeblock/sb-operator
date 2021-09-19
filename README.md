@@ -9,17 +9,31 @@
 
 ## TODO
 
-1. Project CRD
-2. Project artefacts creation
+1. Project CRD - done
+2. Project artefacts creation - done
 3. Helm release reconcile
 4. Send notifications to SB.
-5. Clean up stuff on app delete
-6. Clean up stuff on project delete
-7. Clean up stuff on uninstall SB.
+    a. build pod name
+    b. image build status
+    c. helm deployment status
+    d. project creation status
+    e. app creation status
+    f. ingress name and ip
+    g. managed kubernetes provider
+    h. sb-admin service account details
+5. Clean up stuff on app delete - done
+6. Clean up stuff on project delete - done
 8. Add appropriate labels to all the artefacts.
+9. better exception handling
 
+## TODO 2
 
-## Others
+1. daemon to update images.
+2. deeper clean
+3. compile to binary
+4. Clean up stuff on uninstall SB.
+
+## TODO 3
 
 1. resize registry
 2. resize nfs

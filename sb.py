@@ -124,6 +124,7 @@ def update_app(spec, name, namespace, logger, **kwargs):
     api = client.CustomObjectsApi()
     git_info = spec.get('git')
     ref = git_info.get('ref')
+    # patch should update more stuff.
     patch_body = {
         "spec": {
             "source": {
@@ -157,6 +158,7 @@ def delete_app(spec, name, namespace, logger, **kwargs):
         namespace=namespace,
         plural="images",
         body=client.V1DeleteOptions(),
+        name=name,
     )
     logger.info("Image deleted.")
     response = api.delete_namespaced_custom_object(
@@ -165,6 +167,7 @@ def delete_app(spec, name, namespace, logger, **kwargs):
         namespace=namespace,
         plural="builders",
         body=client.V1DeleteOptions(),
+        name=name,
     )
     logger.info("Builder deleted.")
     # delete all build pods and objects
@@ -174,7 +177,13 @@ def delete_app(spec, name, namespace, logger, **kwargs):
     # send notification
 
 
-# on delete of project
+
+@kopf.on.delete('projects')
+def delete_project(spec, name, logger, **kwargs):
+    logger.info(f"Deleting the namespace...")
+    delete_namespace(name)
+    # any other cleanup
+
 
 @kopf.on.startup()
 def startup_fn(logger, **kwargs):
@@ -214,13 +223,13 @@ def create_helmrelease(name, namespace, tag, logger):
             path = os.path.join(os.path.dirname(__file__), 'helmrelease.yaml')
             tmpl = open(path, 'rt').read()
             text = tmpl.format(name=name, 
-                            tag=tag,
                             chart_name=chart_name,
                             chart_repo=chart_repo,
                             chart_version=chart_version,
                             )
             data = yaml.safe_load(text)
             data['spec']['chart']['values'] = yaml.safe_load(chart_values)
+            data['spec']['chart']['values']['php']['image'] = tag
             response = api.create_namespaced_custom_object(
                 group="helm.fluxcd.io",
                 version="v1",

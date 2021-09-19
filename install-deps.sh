@@ -90,7 +90,6 @@ EOF
 helm upgrade --install nfs-server raphael/nfs-server-provisioner  --version="${NFS_VERSION}" --values=/tmp/nfs-values.yml -n default --wait
 
 # registry
-bcrypt='$REGISTRY_PASSWORD'
 cat > /tmp/registry-values.yml << EOF
 persistence:
     enabled: true
@@ -108,7 +107,8 @@ ingress:
         cert-manager.io/cluster-issuer: letsencrypt-prod
         nginx.ingress.kubernetes.io/proxy-body-size: 0
 secrets:
-    htpasswd: "$REGISTRY_USERNAME:$bcrypt"
+    htpasswd: |
+      $REGISTRY_USERNAME:$REGISTRY_PASSWORD
 EOF
 helm upgrade --install docker-registry twuni/docker-registry --version="${CONTAINER_REGISTRY_VERSION}" --values=/tmp/registry-values.yml -n default --wait
 
