@@ -1,4 +1,4 @@
-#!/usr/bin/env bash -x
+#!/bin/bash -x
 
 # TODO
 # 1. Send status after every step to SB.

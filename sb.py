@@ -10,9 +10,37 @@ from kubernetes.client.rest import ApiException
 def create_project(spec, name, logger, **kwargs):
     logger.info(f"A project is created with spec: {spec}")
     logger.info(f"Create a namespace")
+    create_namespace(name)
     logger.info(f"Create registry credentials")
+    create_registry_credentials(name)
     logger.info(f"Create a service account and attach secrets to that")
+    create_service_account(name)
 
+def create_namespace(name):
+     core_v1 = client.CoreV1Api()
+     labels = {"from": "shapeblock"}
+     body = client.V1Namespace(metadata=client.V1ObjectMeta(name=name, labels=labels))
+     core_v1.create_namespace(body=body)
+
+def delete_namespace(name):
+    core_v1 = client.CoreV1Api()
+    core_v1.delete_namespace(name=name)
+
+
+def create_registry_credentials(namespace):
+    core_v1 = client.CoreV1Api()
+    registry_creds = core_v1.read_namespaced_secret(namespace='default', name='registry-creds')
+    body  = client.V1Secret(metadata=client.V1ObjectMeta(name='registry-creds'))
+    body.data = registry_creds.data
+    body.type = registry_creds.type
+    core_v1.create_namespaced_secret(body=body, namespace=namespace)
+
+def create_service_account(namespace):
+    core_v1 = client.CoreV1Api()
+    body  = client.V1ServiceAccount(metadata=client.V1ObjectMeta(name=namespace))
+    body.secrets = [{'name': 'registry-creds'}]
+    body.image_pull_secrets = [{'name': 'registry-creds'}]
+    core_v1.create_namespaced_service_account(body=body, namespace=namespace)
 
 @kopf.on.create('applications')
 def create_app(spec, name, namespace, logger, **kwargs):

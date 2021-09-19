@@ -19,6 +19,7 @@ spec:
       - name: kubectl-container
         image: shapeblock/sb-operator-init:0.0.9
         command: ["/opt/bitnami/project/install-deps.sh"]
+        imagePullPolicy: Always
         env:
           - name: FLUX_HELM_OPERATOR_VERSION
             value: "1.4.0"
@@ -39,7 +40,7 @@ spec:
           - name: REGISTRY_SIZE
             value: "20Gi"
           - name: REGISTRY_URL
-            value: "registry.little-bird-ae3c"
+            value: "registry.little-bird-ae3c.shapeblock.cloud"
           - name: REGISTRY_PASSWORD
             value: "$2y$10$8Wjc9xlzoRnrlsK.RKULZuexrEwVliSKxI7dj92u.QQM7I4T6acVS"
           - name: REGISTRY_USERNAME
@@ -48,6 +49,9 @@ spec:
             value: "bGl0dGxlLWJpcmQtYWUzYy1hZG1pbjplQj9ydEs+akBpTGRfVSs1R3k5PTw8UDUyRzMK"
           - name: LETSENCRYPT_EMAIL
             value: lakshmi@lakshminp.com
+          - name: INSTALLED
+            value: "1"
       containers:
       - name: sb-operator
         image: shapeblock/sb-operator:__VERSION__
+        imagePullPolicy: Always
