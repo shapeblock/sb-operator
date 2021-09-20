@@ -103,19 +103,23 @@ def create_app(spec, name, namespace, logger, **kwargs):
             )
             logger.info("Image created.")
 
-@kopf.on.create('kpack.io', 'v1alpha1', 'builds')
+@kopf.on.update('kpack.io', 'v1alpha1', 'builds')
 def create_build(spec, status, name, namespace, logger, **kwargs):
     logger.info(f"Create handler for build with status: {status}")
-    if status.get('type') == 'Succeeded' and status.get('status') == 'True':
-        tag = spec.get('tags')[1]
-        logger.info(f"New image created: {tag}")
-        # create helmrelease.
-        create_helmrelease(name, namespace, tag, logger)
+    logger.info(f"Create handler for build with spec: {spec}")
 
 
 @kopf.on.field('kpack.io', 'v1alpha1', 'builds', field='status.conditions')
-def trigger_helm_release(new, logger, **kwargs):
-    logger.info(f"Update handler for build with status: {new}")
+def trigger_helm_release(name, namespace, labels, spec, status, new, logger, **kwargs):
+    logger.info(f"Update handler for build with status: {status}")
+    status = new[0]
+    if status.get('type') == 'Succeeded' and status.get('status') == 'True':
+        tag = spec.get('tags')[1]
+        logger.info(f"New image created: {tag}")
+        app_name = labels['image.kpack.io/image']
+        logger.info(f"Deploying app: {app_name}")
+        # create helmrelease.
+        create_helmrelease(app_name, namespace, tag, logger)
 
 
 @kopf.on.update('applications')
@@ -196,14 +200,14 @@ def startup_fn(logger, **kwargs):
 def create_helmrelease(name, namespace, tag, logger):
     api = client.CustomObjectsApi()
     app = api.get_namespaced_custom_object(
-        group="helm.fluxcd.io",
-        version="v1",
+        group="dev.shapeblock.com",
+        version="v1alpha1",
         name=name,
         namespace=namespace,
-        plural="helmreleases",
+        plural="applications",
     )
-    spec = app.spec
-    logger.info("App spec: {spec}.")
+    spec = app.get('spec')
+    logger.info(f"App spec: {spec}.")
     try:
         resource = api.get_namespaced_custom_object(
             group="helm.fluxcd.io",
@@ -212,7 +216,24 @@ def create_helmrelease(name, namespace, tag, logger):
             namespace=namespace,
             plural="helmreleases",
         )
-        logger.info("Helm Release exists.")
+        logger.info("Helm Release exists, patching ...")
+        chart_info = spec.get('chart')
+        chart_values = chart_info.get('values')
+        data = {
+            "spec": {
+                "values": yaml.safe_load(chart_values),
+            }
+        }
+        data['spec']['values']['php']['image'] = tag
+        response = api.patch_namespaced_custom_object(
+            group="helm.fluxcd.io",
+            version="v1",
+            namespace=namespace,
+            name=name,
+            plural="helmreleases",
+            body=data,
+        )
+        logger.info("Helmrelease patched.")
     except ApiException as error:
         if error.status == 404:
             chart_info = spec.get('chart')
@@ -228,8 +249,8 @@ def create_helmrelease(name, namespace, tag, logger):
                             chart_version=chart_version,
                             )
             data = yaml.safe_load(text)
-            data['spec']['chart']['values'] = yaml.safe_load(chart_values)
-            data['spec']['chart']['values']['php']['image'] = tag
+            data['spec']['values'] = yaml.safe_load(chart_values)
+            data['spec']['values']['php']['image'] = tag
             response = api.create_namespaced_custom_object(
                 group="helm.fluxcd.io",
                 version="v1",
