@@ -9,12 +9,11 @@ spec:
     name: base
     kind: ClusterStack
   store:
-    name: default
+    name: sb-drupal
     kind: ClusterStore
   order:
   - group:
-    - id: paketo-buildpacks/ca-certificates
-    - id: paketo-buildpacks/nginx
-    - id: paketo-buildpacks/php-dist
-    - id: paketo-buildpacks/php-composer
-    - id: paketo-buildpacks/php-web
+    - id: shapeblock-buildpacks/php
+    - id: shapeblock-buildpacks/composer
+    - id: shapeblock-buildpacks/php-fpm
+    - id: shapeblock-buildpacks/nginx

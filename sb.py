@@ -1,13 +1,19 @@
 import os
 
+import requests
 import kopf
 from kubernetes import client
 import yaml
 from kubernetes.client.rest import ApiException
 
+sb_url = os.getenv('SB_URL')
+cluster_id = os.getenv('CLUSTER_ID')
 
 @kopf.on.create('projects')
-def create_project(spec, name, logger, **kwargs):
+def create_project(spec, name, labels, logger, **kwargs):
+    # TODO: add label
+    # TODO: check if project already exists
+    project_uuid = labels['shapeblock.com/project-uuid']
     logger.info(f"A project is created with spec: {spec}")
     logger.info(f"Create a namespace")
     create_namespace(name)
@@ -15,12 +21,37 @@ def create_project(spec, name, logger, **kwargs):
     create_registry_credentials(name)
     logger.info(f"Create a service account and attach secrets to that")
     create_service_account(name)
+    create_role_binding(name)
+    core_v1 = client.CoreV1Api()
+    resp = core_v1.read_namespaced_service_account(namespace=name, name=name)
+    logger.info(resp)
+    for secret in resp.secrets:
+        if f'{name}-token' in secret.name:
+            secret_response = core_v1.read_namespaced_secret(namespace=name, name=secret.name)
+            response = requests.post(f"{sb_url}/projects/{project_uuid}/token", json=secret_response.data)
+            logger.info(f"Sent service account token for project {name}.")
+
+
+def is_valid_project(sb_id):
+    response = requests.get(sb_url + '/verify-project/' + sb_id)
+    return response.status_code == 200
 
 def create_namespace(name):
+    # TODO: check if namespace already exists
      core_v1 = client.CoreV1Api()
      labels = {"from": "shapeblock"}
      body = client.V1Namespace(metadata=client.V1ObjectMeta(name=name, labels=labels))
      core_v1.create_namespace(body=body)
+
+def create_role_binding(namespace):
+     rbac_v1 = client.RbacAuthorizationV1Api()
+     path = os.path.join(os.path.dirname(__file__), 'role-binding.yaml')
+     tmpl = open(path, 'rt').read()
+     text = tmpl.format(name=namespace)
+     body = yaml.safe_load(text)
+     rbac_v1.create_namespaced_role_binding(body=body, namespace=namespace)
+
+
 
 def delete_namespace(name):
     core_v1 = client.CoreV1Api()
@@ -36,6 +67,7 @@ def create_registry_credentials(namespace):
     core_v1.create_namespaced_secret(body=body, namespace=namespace)
 
 def create_service_account(namespace):
+    # TODO: add label
     core_v1 = client.CoreV1Api()
     body  = client.V1ServiceAccount(metadata=client.V1ObjectMeta(name=namespace))
     body.secrets = [{'name': 'registry-creds'}]
@@ -44,6 +76,7 @@ def create_service_account(namespace):
 
 @kopf.on.create('applications')
 def create_app(spec, name, namespace, logger, **kwargs):
+    # TODO: add label
     logger.info(f"An application is created with spec: {spec}")
     api = client.CustomObjectsApi()
     # Create builder
@@ -104,9 +137,10 @@ def create_app(spec, name, namespace, logger, **kwargs):
             logger.info("Image created.")
 
 @kopf.on.update('kpack.io', 'v1alpha1', 'builds')
-def create_build(spec, status, name, namespace, logger, **kwargs):
-    logger.info(f"Create handler for build with status: {status}")
-    logger.info(f"Create handler for build with spec: {spec}")
+def update_build(spec, status, name, namespace, logger, **kwargs):
+    logger.info(f"Update handler for build with status: {status}")
+    logger.info(f"Update handler for build with spec: {spec}")
+    # TODO: send build pod
 
 
 @kopf.on.field('kpack.io', 'v1alpha1', 'builds', field='status.conditions')
@@ -128,7 +162,7 @@ def update_app(spec, name, namespace, logger, **kwargs):
     api = client.CustomObjectsApi()
     git_info = spec.get('git')
     ref = git_info.get('ref')
-    # patch should update more stuff.
+    # TODO: patch should update more stuff.
     patch_body = {
         "spec": {
             "source": {
@@ -148,9 +182,10 @@ def update_app(spec, name, namespace, logger, **kwargs):
     )
     logger.info("Image patched.")
 
-
-# on field update of helmrelease
-    # send notification
+@kopf.on.field('helm.fluxcd.io', 'v1', 'helmreleases', field='status.conditions')
+def notify_helm_release(name, namespace, labels, spec, status, new, logger, **kwargs):
+    logger.info(f"Update handler for helmrelease with condition: {new}")
+    # TODO: update status of helm release
 
 @kopf.on.delete('applications')
 def delete_app(spec, name, namespace, logger, **kwargs):
@@ -174,11 +209,11 @@ def delete_app(spec, name, namespace, logger, **kwargs):
         name=name,
     )
     logger.info("Builder deleted.")
-    # delete all build pods and objects
-    # clean up the registry
-    # delete helm release objects
-    # delete volumes if any
-    # send notification
+    # TODO: delete all build pods and objects
+    # TODO: clean up the registry
+    # TODO: delete helm release objects
+    # TODO: delete volumes if any
+    # TODO: send notification
 
 
 
@@ -187,17 +222,43 @@ def delete_project(spec, name, logger, **kwargs):
     logger.info(f"Deleting the namespace...")
     delete_namespace(name)
     # any other cleanup
+    # TODO: send notification
 
 
 @kopf.on.startup()
 def startup_fn(logger, **kwargs):
     logger.info("check if helm release, ingress, cert, registry, kpack, nfs are installed.")
     logger.info("send notification to SB.")
+    #send_ingress_details(logger)
+    send_cluster_admin_account(logger)
 
-# daemon to update kpack base images
-# daemon to send status to SB every x hrs
+
+def send_ingress_details(logger):
+    core_v1 = client.CoreV1Api()
+    try:
+        resp = core_v1.read_namespaced_service(namespace='ingress-nginx', name='nginx-ingress-nginx-ingress-controller')
+    except :
+        logger.error('Nginx ingress not found.')
+    ingress_info = resp.status.to_dict()
+    response = requests.post(f"{sb_url}/clusters/{cluster_id}/ingress-info", json=ingress_info)
+    if response.status_code == 202:
+        logger.info("POSTed ingress info.")
+
+def send_cluster_admin_account(logger):
+    data ={
+        'token': open('/var/run/secrets/kubernetes.io/serviceaccount/token').read(),
+        'ca.crt': open('/var/run/secrets/kubernetes.io/serviceaccount/ca.crt').read(),
+    }
+    response = requests.post(f"{sb_url}/clusters/{cluster_id}/token-info", json=data)
+    if response.status_code == 202:
+        logger.info("POSTed token info.")
+
+
+# TODO: daemon to update kpack base images
+# TODO: daemon to send status to SB every x hrs
 
 def create_helmrelease(name, namespace, tag, logger):
+    # TODO: add label
     api = client.CustomObjectsApi()
     app = api.get_namespaced_custom_object(
         group="dev.shapeblock.com",

@@ -11,7 +11,7 @@
 
 1. Project CRD - done
 2. Project artefacts creation - done
-3. Helm release reconcile
+3. Helm release reconcile - done
 4. Send notifications to SB.
     a. build pod name
     b. image build status
@@ -40,6 +40,11 @@
 3. upgrade versions
 4. add ssh to app
 5. add registry management credentials to cluster
+
+## TODO 4
+
+1. Custom build templates
+2. Other build techniques apart from CNB
 
 ## Architecture
 
