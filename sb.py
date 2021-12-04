@@ -28,7 +28,7 @@ def create_project(spec, name, labels, logger, **kwargs):
     for secret in resp.secrets:
         if f'{name}-token' in secret.name:
             secret_response = core_v1.read_namespaced_secret(namespace=name, name=secret.name)
-            response = requests.post(f"{sb_url}/projects/{project_uuid}/token", json=secret_response.data)
+            response = requests.post(f"{sb_url}/projects/{project_uuid}/token/", json=secret_response.data)
             logger.info(f"Sent service account token for project {name}.")
 
 
@@ -137,10 +137,17 @@ def create_app(spec, name, namespace, logger, **kwargs):
             logger.info("Image created.")
 
 @kopf.on.update('kpack.io', 'v1alpha1', 'builds')
-def update_build(spec, status, name, namespace, logger, **kwargs):
-    logger.info(f"Update handler for build with status: {status}")
-    logger.info(f"Update handler for build with spec: {spec}")
-    # TODO: send build pod
+def update_build(spec, status, name, namespace, logger, labels, **kwargs):
+    logger.info(f'------------------ {name}')
+    if status.get('stepsCompleted') == ['prepare']:
+        logger.info('POSTing build pod info.')
+        data = {
+            'pod': status['podName'],
+            'name': labels['image.kpack.io/image'],
+            'namespace': namespace,
+        }
+        response = requests.post(f"{sb_url}/build-pod/", json=data)
+        logger.info(f"Update handler for build with status: {status}")
 
 
 @kopf.on.field('kpack.io', 'v1alpha1', 'builds', field='status.conditions')
@@ -180,12 +187,22 @@ def update_app(spec, name, namespace, logger, **kwargs):
         plural="images",
         body=patch_body,
     )
+    print(response)
     logger.info("Image patched.")
 
-@kopf.on.field('helm.fluxcd.io', 'v1', 'helmreleases', field='status.conditions')
-def notify_helm_release(name, namespace, labels, spec, status, new, logger, **kwargs):
-    logger.info(f"Update handler for helmrelease with condition: {new}")
-    # TODO: update status of helm release
+@kopf.on.field('helm.fluxcd.io', 'v1', 'helmreleases', field='status')
+def notify_helm_release(name, namespace, labels, spec, status, new, old, logger, **kwargs):
+    if old['releaseStatus'] == 'pending-upgrade' and new['releaseStatus'] == 'deployed':
+        logger.info(f'------------------ new: {new}')
+        logger.info('POSTing helm release status.')
+        data = {
+            'name': name,
+            'namespace': namespace,
+        }
+        response = requests.post(f"{sb_url}/helm-status/", json=data)
+        logger.info(f"Updates Helm release status for {name} successfully.")
+
+    #TODO: update status of helm release
 
 @kopf.on.delete('applications')
 def delete_app(spec, name, namespace, logger, **kwargs):
@@ -229,26 +246,14 @@ def delete_project(spec, name, logger, **kwargs):
 def startup_fn(logger, **kwargs):
     logger.info("check if helm release, ingress, cert, registry, kpack, nfs are installed.")
     logger.info("send notification to SB.")
-    #send_ingress_details(logger)
     send_cluster_admin_account(logger)
-
-
-def send_ingress_details(logger):
-    core_v1 = client.CoreV1Api()
-    try:
-        resp = core_v1.read_namespaced_service(namespace='ingress-nginx', name='nginx-ingress-nginx-ingress-controller')
-    except :
-        logger.error('Nginx ingress not found.')
-    ingress_info = resp.status.to_dict()
-    response = requests.post(f"{sb_url}/clusters/{cluster_id}/ingress-info", json=ingress_info)
-    if response.status_code == 202:
-        logger.info("POSTed ingress info.")
 
 def send_cluster_admin_account(logger):
     data ={
         'token': open('/var/run/secrets/kubernetes.io/serviceaccount/token').read(),
         'ca.crt': open('/var/run/secrets/kubernetes.io/serviceaccount/ca.crt').read(),
     }
+    logger.info('POSTing token info.')
     response = requests.post(f"{sb_url}/clusters/{cluster_id}/token-info", json=data)
     if response.status_code == 202:
         logger.info("POSTed token info.")
