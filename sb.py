@@ -92,7 +92,9 @@ def create_app(spec, name, namespace, logger, **kwargs):
     except ApiException as error:
         if error.status == 404:
             tag = spec.get('tag')
-            path = os.path.join(os.path.dirname(__file__), 'builder.yaml')
+            chart_info = spec.get('chart')
+            stack = chart_info.get('name')
+            path = os.path.join(os.path.dirname(__file__), f'builder-{stack}.yaml')
             tmpl = open(path, 'rt').read()
             text = tmpl.format(name=name, tag=tag, service_account=namespace)
             data = yaml.safe_load(text)

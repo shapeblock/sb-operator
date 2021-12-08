@@ -208,7 +208,11 @@ spec:
           - name: LETSENCRYPT_EMAIL
             value: lakshmi@lakshminp.com
           - name: ITERATION
-            value: "25"
+            value: "32"
+          - name: SB_URL
+            value: "http://localhost:8000"
+          - name: CLUSTER_ID
+            value: ""
       containers:
       - name: sb-operator
         image: shapeblock/sb-operator:0.0.9

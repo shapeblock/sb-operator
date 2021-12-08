@@ -8,7 +8,7 @@ spec:
   tag: registry.little-bird-ae3c.shapeblock.cloud/drupal-9/d9-01
   git:
     repo: https://github.com/badri/d9-buildpack.git
-    ref: 710728a7a127cf5727388222a16c3f4c90159fdb
+    ref: 9122062360428660f565920dad54f02e47e16446
   chart:
     repo: https://shapeblock.github.io
     name: drupal

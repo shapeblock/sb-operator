@@ -1,9 +1,10 @@
 #!/bin/bash -x
 
 # TODO
-# 1. Send status after every step to SB.
+# 1. Send status after every step to SB. - optional
 # 2. Move DNS to SB. - done
-# 3. Have temp files for everything.
+# 3. Have temp files for everything. - optional
+# 4. Move this entire op to a python script. - optional
 
 if [ -n "$INSTALLED" ]; then
   exit 0
@@ -22,6 +23,8 @@ helm upgrade --install nginx-ingress bitnami/nginx-ingress-controller --version=
 # set sb cloud A record
 
 ingress_ip=$(kubectl get svc nginx-ingress-nginx-ingress-controller -n nginx-ingress -o yaml  | yj | jq -r '.status.loadBalancer.ingress[0].ip')
+
+curl --header "Content-Type: application/json" --request POST --data "$ingress_ip"   $SB_URL/clusters/$CLUSTER_ID/ingress-info
 
 # cert manager
 kubectl create namespace cert-manager --dry-run=client -o yaml | kubectl apply -f -
