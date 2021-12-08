@@ -292,7 +292,11 @@ def create_helmrelease(name, namespace, tag, logger):
                 "values": yaml.safe_load(chart_values),
             }
         }
-        data['spec']['values']['php']['image'] = tag
+        stack = chart_info.get('name')
+        if stack == 'drupal':
+            data['spec']['values']['php']['image'] = tag
+        if stack == 'nodejs':
+            data['spec']['values']['image']['repository'] = tag
         response = api.patch_namespaced_custom_object(
             group="helm.fluxcd.io",
             version="v1",
@@ -318,7 +322,11 @@ def create_helmrelease(name, namespace, tag, logger):
                             )
             data = yaml.safe_load(text)
             data['spec']['values'] = yaml.safe_load(chart_values)
-            data['spec']['values']['php']['image'] = tag
+            stack = chart_name
+            if stack == 'drupal':
+                data['spec']['values']['php']['image'] = tag
+            if stack == 'nodejs':
+                data['spec']['values']['image']['repository'] = tag
             response = api.create_namespaced_custom_object(
                 group="helm.fluxcd.io",
                 version="v1",
