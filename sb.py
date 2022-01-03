@@ -208,7 +208,7 @@ def notify_helm_release(name, namespace, labels, spec, status, new, old, logger,
 
 @kopf.on.delete('applications')
 def delete_app(spec, name, namespace, logger, **kwargs):
-    logger.info(f"An application is created with spec: {spec}")
+    logger.info(f"An application is deleted with spec: {spec}")
     api = client.CustomObjectsApi()
     response = api.delete_namespaced_custom_object(
         group="kpack.io",
@@ -228,13 +228,26 @@ def delete_app(spec, name, namespace, logger, **kwargs):
         name=name,
     )
     logger.info("Builder deleted.")
-    # TODO: delete all build pods and objects
     # TODO: clean up the registry
-    # TODO: delete helm release objects
-    # TODO: delete volumes if any
-    # TODO: send notification
-
-
+    # Delete helm release objects
+    # This will delete all build pods and objects.
+    response = api.delete_namespaced_custom_object(
+        group="helm.fluxcd.io",
+        version="v1",
+        name=name,
+        namespace=namespace,
+        plural="helmreleases",
+        body=client.V1DeleteOptions(),
+    )
+    logger.info("Helm release deleted.")
+    # Delete volumes if any    
+    core_v1 = client.CoreV1Api()
+    label = f"app.kubernetes.io/instance={namespace}-{name}"
+    pvcs = core_v1.list_namespaced_persistent_volume_claim(namespace=namespace, label_selector=label)
+    for pvc in pvcs.items:
+        resp = core_v1.delete_namespaced_persistent_volume_claim(namespace=namespace, body=client.V1DeleteOptions(), name=pvc.metadata.name)
+        logger.info(f'Deleting PVC {pvc.metadata.name}')
+    logger.info("volumes deleted.")
 
 @kopf.on.delete('projects')
 def delete_project(spec, name, logger, **kwargs):
