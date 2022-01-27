@@ -1,5 +1,5 @@
 import os
-
+import time
 import requests
 import kopf
 from kubernetes import client
@@ -73,6 +73,7 @@ def create_service_account(namespace):
     body.secrets = [{'name': 'registry-creds'}]
     body.image_pull_secrets = [{'name': 'registry-creds'}]
     core_v1.create_namespaced_service_account(body=body, namespace=namespace)
+    time.sleep(4) # to wait till a secret gets attached to the SA
 
 @kopf.on.create('applications')
 def create_app(spec, name, namespace, logger, **kwargs):
