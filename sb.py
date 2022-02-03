@@ -190,57 +190,68 @@ def update_app(spec, name, namespace, logger, **kwargs):
         plural="images",
         body=patch_body,
     )
-    print(response)
     logger.info("Image patched.")
 
-@kopf.on.field('helm.fluxcd.io', 'v1', 'helmreleases', field='status')
-def notify_helm_release(name, namespace, labels, spec, status, new, old, logger, **kwargs):
-    if old['releaseStatus'] == 'pending-upgrade' and new['releaseStatus'] == 'deployed':
-        logger.info(f'------------------ new: {new}')
-        logger.info('POSTing helm release status.')
-        data = {
-            'name': name,
-            'namespace': namespace,
-        }
-        response = requests.post(f"{sb_url}/helm-status/", json=data)
-        logger.info(f"Updates Helm release status for {name} successfully.")
 
-    #TODO: update status of helm release
+
+@kopf.on.field('helm.fluxcd.io', 'v1', 'helmreleases', field='status.observedGeneration')
+def notify_helm_release(old, new, diff, namespace, name, logger, **kwargs):
+    logger.info(f"------O----------- old: {old}")
+    logger.info(f"------O----------- new: {new}")
+    logger.info(f'-------O---------- new: {new}')
+    logger.info('POSTing helm release status.')
+    #TODO: check if helm status is successful.
+    data = {
+        'name': name,
+        'namespace': namespace,
+    }
+    response = requests.post(f"{sb_url}/helm-status/", json=data)
+    logger.info(f"Updates Helm release status for {name} successfully.")
+
 
 @kopf.on.delete('applications')
 def delete_app(spec, name, namespace, logger, **kwargs):
     logger.info(f"An application is deleted with spec: {spec}")
-    api = client.CustomObjectsApi()
-    response = api.delete_namespaced_custom_object(
-        group="kpack.io",
-        version="v1alpha1",
-        namespace=namespace,
-        plural="images",
-        body=client.V1DeleteOptions(),
-        name=name,
-    )
-    logger.info("Image deleted.")
-    response = api.delete_namespaced_custom_object(
-        group="kpack.io",
-        version="v1alpha1",
-        namespace=namespace,
-        plural="builders",
-        body=client.V1DeleteOptions(),
-        name=name,
-    )
-    logger.info("Builder deleted.")
+    api = client.CustomObjectsApi()    
+    try:
+        response = api.delete_namespaced_custom_object(
+            group="kpack.io",
+            version="v1alpha1",
+            namespace=namespace,
+            plural="images",
+            body=client.V1DeleteOptions(),
+            name=name,
+        )
+        logger.info("Image deleted.")
+    except:
+        logger.info('Unable to delete image.')
+    try:
+        response = api.delete_namespaced_custom_object(
+            group="kpack.io",
+            version="v1alpha1",
+            namespace=namespace,
+            plural="builders",
+            body=client.V1DeleteOptions(),
+            name=name,
+        )
+        logger.info("Builder deleted.")
+    except:
+        logger.info('Unable to delete builder.')
     # TODO: clean up the registry
     # Delete helm release objects
     # This will delete all build pods and objects.
-    response = api.delete_namespaced_custom_object(
-        group="helm.fluxcd.io",
-        version="v1",
-        name=name,
-        namespace=namespace,
-        plural="helmreleases",
-        body=client.V1DeleteOptions(),
-    )
-    logger.info("Helm release deleted.")
+    try:
+        response = api.delete_namespaced_custom_object(
+            group="helm.fluxcd.io",
+            version="v1",
+            name=name,
+            namespace=namespace,
+            plural="helmreleases",
+            body=client.V1DeleteOptions(),
+        )
+        logger.info("Helm release deleted.")
+    except:
+        logger.info('Unable to delete helm release.')
     # Delete volumes if any    
     core_v1 = client.CoreV1Api()
     label = f"app.kubernetes.io/instance={namespace}-{name}"
@@ -303,11 +314,15 @@ def create_helmrelease(name, namespace, tag, logger):
         chart_values = chart_info.get('values')
         data = {
             "spec": {
+                "chart": {
+                    # Add chart version from spec
+                    "version": chart_info.get('version'),
+                },
                 "values": yaml.safe_load(chart_values),
             }
         }
         stack = chart_info.get('name')
-        if stack == 'drupal':
+        if stack in ['drupal', 'php']:
             data['spec']['values']['php']['image'] = tag
         if stack == 'nodejs':
             data['spec']['values']['image']['repository'] = tag
@@ -337,7 +352,7 @@ def create_helmrelease(name, namespace, tag, logger):
             data = yaml.safe_load(text)
             data['spec']['values'] = yaml.safe_load(chart_values)
             stack = chart_name
-            if stack == 'drupal':
+            if stack in ['drupal', 'php']:
                 data['spec']['values']['php']['image'] = tag
             if stack == 'nodejs':
                 data['spec']['values']['image']['repository'] = tag

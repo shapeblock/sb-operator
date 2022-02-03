@@ -1,0 +1,20 @@
+apiVersion: kpack.io/v1alpha1
+kind: Builder
+metadata:
+  name: "{name}"
+spec:
+  tag: "{tag}"
+  serviceAccount: "{service_account}"
+  stack:
+    name: base
+    kind: ClusterStack
+  store:
+    name: paketo-php
+    kind: ClusterStore
+  order:
+  - group:
+    - id: paketo-buildpacks/ca-certificates
+    - id: paketo-buildpacks/nginx
+    - id: paketo-buildpacks/php-dist
+    - id: paketo-buildpacks/php-composer
+    - id: paketo-buildpacks/php-web
