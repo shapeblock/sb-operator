@@ -84,7 +84,7 @@ def create_app(spec, name, namespace, logger, **kwargs):
     try:
         resource = api.get_namespaced_custom_object(
             group="kpack.io",
-            version="v1alpha1",
+            version="v1alpha2",
             name=name,
             namespace=namespace,
             plural="builders",
@@ -101,7 +101,7 @@ def create_app(spec, name, namespace, logger, **kwargs):
             data = yaml.safe_load(text)
             response = api.create_namespaced_custom_object(
                 group="kpack.io",
-                version="v1alpha1",
+                version="v1alpha2",
                 namespace=namespace,
                 plural="builders",
                 body=data,
@@ -112,7 +112,7 @@ def create_app(spec, name, namespace, logger, **kwargs):
     try:
         resource = api.get_namespaced_custom_object(
             group="kpack.io",
-            version="v1alpha1",
+            version="v1alpha2",
             name=name,
             namespace=namespace,
             plural="images",
@@ -132,14 +132,14 @@ def create_app(spec, name, namespace, logger, **kwargs):
             data = yaml.safe_load(text)
             response = api.create_namespaced_custom_object(
                 group="kpack.io",
-                version="v1alpha1",
+                version="v1alpha2",
                 namespace=namespace,
                 plural="images",
                 body=data,
             )
             logger.info("Image created.")
 
-@kopf.on.update('kpack.io', 'v1alpha1', 'builds')
+@kopf.on.update('kpack.io', 'v1alpha2', 'builds')
 def update_build(spec, status, name, namespace, logger, labels, **kwargs):
     logger.info(f'------------------ {name}')
     if status.get('stepsCompleted') == ['prepare']:
@@ -153,7 +153,7 @@ def update_build(spec, status, name, namespace, logger, labels, **kwargs):
         logger.info(f"Update handler for build with status: {status}")
 
 
-@kopf.on.field('kpack.io', 'v1alpha1', 'builds', field='status.conditions')
+@kopf.on.field('kpack.io', 'v1alpha2', 'builds', field='status.conditions')
 def trigger_helm_release(name, namespace, labels, spec, status, new, logger, **kwargs):
     logger.info(f"Update handler for build with status: {status}")
     status = new[0]
@@ -184,7 +184,7 @@ def update_app(spec, name, namespace, logger, **kwargs):
     }
     response = api.patch_namespaced_custom_object(
         group="kpack.io",
-        version="v1alpha1",
+        version="v1alpha2",
         namespace=namespace,
         name=name,
         plural="images",
@@ -216,7 +216,7 @@ def delete_app(spec, name, namespace, logger, **kwargs):
     try:
         response = api.delete_namespaced_custom_object(
             group="kpack.io",
-            version="v1alpha1",
+            version="v1alpha2",
             namespace=namespace,
             plural="images",
             body=client.V1DeleteOptions(),
@@ -228,7 +228,7 @@ def delete_app(spec, name, namespace, logger, **kwargs):
     try:
         response = api.delete_namespaced_custom_object(
             group="kpack.io",
-            version="v1alpha1",
+            version="v1alpha2",
             namespace=namespace,
             plural="builders",
             body=client.V1DeleteOptions(),
@@ -294,7 +294,7 @@ def create_helmrelease(name, namespace, tag, logger):
     api = client.CustomObjectsApi()
     app = api.get_namespaced_custom_object(
         group="dev.shapeblock.com",
-        version="v1alpha1",
+        version="v1alpha2",
         name=name,
         namespace=namespace,
         plural="applications",
