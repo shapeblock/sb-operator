@@ -8,7 +8,8 @@ spec:
     kind: Builder
     name: "{builder_name}"
   cache:
-    volume: "2Gi"
+    volume:
+      size: "2Gi"
   failedBuildHistoryLimit: 10
   imageTaggingStrategy: BuildNumber
   serviceAccount: "{service_account}"
