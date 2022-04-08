@@ -294,7 +294,7 @@ def create_helmrelease(name, namespace, tag, logger):
     api = client.CustomObjectsApi()
     app = api.get_namespaced_custom_object(
         group="dev.shapeblock.com",
-        version="v1alpha2",
+        version="v1alpha1",
         name=name,
         namespace=namespace,
         plural="applications",
