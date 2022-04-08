@@ -292,13 +292,18 @@ def send_cluster_admin_account(logger):
 def create_helmrelease(name, namespace, tag, logger):
     # TODO: add label
     api = client.CustomObjectsApi()
-    app = api.get_namespaced_custom_object(
-        group="dev.shapeblock.com",
-        version="v1alpha1",
-        name=name,
-        namespace=namespace,
-        plural="applications",
-    )
+    try:
+        app = api.get_namespaced_custom_object(
+            group="dev.shapeblock.com",
+            version="v1alpha1",
+            name=name,
+            namespace=namespace,
+            plural="applications",
+        )
+    except ApiException as error:
+        if error.status == 404:
+            logger.error(f"Application {name} not found in namespace {namespace}.")
+            return
     spec = app.get('spec')
     logger.info(f"App spec: {spec}.")
     try:
