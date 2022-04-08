@@ -4,7 +4,7 @@ metadata:
   name: "{name}"
 spec:
   tag: "{tag}"
-  serviceAccount: "{service_account}"
+  serviceAccountName: "{service_account}"
   stack:
     name: base
     kind: ClusterStack

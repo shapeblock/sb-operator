@@ -12,7 +12,7 @@ spec:
       size: "2Gi"
   failedBuildHistoryLimit: 10
   imageTaggingStrategy: BuildNumber
-  serviceAccount: "{service_account}"
+  serviceAccountName: "{service_account}"
   source:
     git:
       revision: "{ref}"
