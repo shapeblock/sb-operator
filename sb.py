@@ -20,7 +20,7 @@ def create_project(spec, name, labels, logger, **kwargs):
     logger.info(f"Create registry credentials")
     create_registry_credentials(name)
     logger.info(f"Create a service account and attach secrets to that")
-    create_service_account(name)
+    create_service_account(name, name, logger)
     create_role_binding(name)
     core_v1 = client.CoreV1Api()
     resp = core_v1.read_namespaced_service_account(namespace=name, name=name)
@@ -66,20 +66,33 @@ def create_registry_credentials(namespace):
     body.type = registry_creds.type
     core_v1.create_namespaced_secret(body=body, namespace=namespace)
 
-def create_service_account(namespace):
+def create_service_account(name, namespace, logger):
     # TODO: add label
+    logger.info(f"Creating service account {name} in {namespace}")
     core_v1 = client.CoreV1Api()
-    body  = client.V1ServiceAccount(metadata=client.V1ObjectMeta(name=namespace))
+    body  = client.V1ServiceAccount(metadata=client.V1ObjectMeta(name=name))
     body.secrets = [{'name': 'registry-creds'}]
     body.image_pull_secrets = [{'name': 'registry-creds'}]
-    core_v1.create_namespaced_service_account(body=body, namespace=namespace)
+    service_account = core_v1.create_namespaced_service_account(body=body, namespace=namespace)
     time.sleep(4) # to wait till a secret gets attached to the SA
+    return service_account
 
 @kopf.on.create('applications')
 def create_app(spec, name, namespace, logger, **kwargs):
     # TODO: add label
     logger.info(f"An application is created with spec: {spec}")
     api = client.CustomObjectsApi()
+    # create service account
+    service_account = create_service_account(name, namespace, logger)
+    # add secret to service account
+    core_v1 = client.CoreV1Api()
+    ssh_secret = client.V1ObjectReference(kind='Secret', name=f'{name}-ssh')
+    service_account.secrets.append(ssh_secret)
+    try:
+        service_account = core_v1.patch_namespaced_service_account(namespace=namespace, name=name, body=client.V1ServiceAccount(secrets=service_account.secrets))
+    except:
+        logger.error(f'Unable to update service account for app {name} in project {namespace}.')
+        return
     # Create builder
     try:
         resource = api.get_namespaced_custom_object(
@@ -97,7 +110,7 @@ def create_app(spec, name, namespace, logger, **kwargs):
             stack = chart_info.get('name')
             path = os.path.join(os.path.dirname(__file__), f'builder-{stack}.yaml')
             tmpl = open(path, 'rt').read()
-            text = tmpl.format(name=name, tag=tag, service_account=namespace)
+            text = tmpl.format(name=name, tag=tag, service_account=name)
             data = yaml.safe_load(text)
             response = api.create_namespaced_custom_object(
                 group="kpack.io",
@@ -124,7 +137,7 @@ def create_app(spec, name, namespace, logger, **kwargs):
             git_info = spec.get('git')
             repo = git_info.get('repo')
             ref = git_info.get('ref')
-            service_account = namespace
+            service_account = name
             builder = name
             path = os.path.join(os.path.dirname(__file__), 'image.yaml')
             tmpl = open(path, 'rt').read()
@@ -260,6 +273,12 @@ def delete_app(spec, name, namespace, logger, **kwargs):
         resp = core_v1.delete_namespaced_persistent_volume_claim(namespace=namespace, body=client.V1DeleteOptions(), name=pvc.metadata.name)
         logger.info(f'Deleting PVC {pvc.metadata.name}')
     logger.info("volumes deleted.")
+    # delete secret
+    logger.info('Deleting secrets.')
+    core_v1.delete_namespaced_secret(namespace=namespace, name=f'{name}-ssh')
+    # Delete service account
+    logger.info('Deleting service account.')
+    core_v1.delete_namespaced_service_account(namespace=namespace, name=name)
 
 @kopf.on.delete('projects')
 def delete_project(spec, name, logger, **kwargs):
