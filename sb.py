@@ -84,15 +84,20 @@ def create_app(spec, name, namespace, logger, **kwargs):
     api = client.CustomObjectsApi()
     # create service account
     service_account = create_service_account(name, namespace, logger)
-    # add secret to service account
-    core_v1 = client.CoreV1Api()
-    ssh_secret = client.V1ObjectReference(kind='Secret', name=f'{name}-ssh')
-    service_account.secrets.append(ssh_secret)
-    try:
-        service_account = core_v1.patch_namespaced_service_account(namespace=namespace, name=name, body=client.V1ServiceAccount(secrets=service_account.secrets))
-    except:
-        logger.error(f'Unable to update service account for app {name} in project {namespace}.')
-        return
+
+    # add secret to service account if private repo
+    git_info = spec.get('git')
+    repo = git_info.get('repo')
+    if repo.startswith('git@'):
+        logger.info('Attaching ssh secret.')
+        core_v1 = client.CoreV1Api()
+        ssh_secret = client.V1ObjectReference(kind='Secret', name=f'{name}-ssh')
+        service_account.secrets.append(ssh_secret)
+        try:
+            service_account = core_v1.patch_namespaced_service_account(namespace=namespace, name=name, body=client.V1ServiceAccount(secrets=service_account.secrets))
+        except:
+            logger.error(f'Unable to update service account for app {name} in project {namespace}.')
+            return
     # Create builder
     try:
         resource = api.get_namespaced_custom_object(
@@ -273,9 +278,13 @@ def delete_app(spec, name, namespace, logger, **kwargs):
         resp = core_v1.delete_namespaced_persistent_volume_claim(namespace=namespace, body=client.V1DeleteOptions(), name=pvc.metadata.name)
         logger.info(f'Deleting PVC {pvc.metadata.name}')
     logger.info("volumes deleted.")
+    
     # delete secret
-    logger.info('Deleting secrets.')
-    core_v1.delete_namespaced_secret(namespace=namespace, name=f'{name}-ssh')
+    try:
+        logger.info('Deleting secrets.')
+        core_v1.delete_namespaced_secret(namespace=namespace, name=f'{name}-ssh')
+    except:
+        logger.info(f'Unable to delete secret.')
     # Delete service account
     logger.info('Deleting service account.')
     core_v1.delete_namespaced_service_account(namespace=namespace, name=name)
@@ -348,7 +357,7 @@ def create_helmrelease(name, namespace, tag, logger):
         stack = chart_info.get('name')
         if stack in ['drupal', 'php']:
             data['spec']['values']['php']['image'] = tag
-        if stack == 'nodejs':
+        if stack in ['nodejs', 'django']:
             data['spec']['values']['image']['repository'] = tag
         response = api.patch_namespaced_custom_object(
             group="helm.fluxcd.io",

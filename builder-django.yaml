@@ -1,0 +1,16 @@
+apiVersion: kpack.io/v1alpha2
+kind: Builder
+metadata:
+  name: "{name}"
+spec:
+  tag: "{tag}"
+  serviceAccountName: "{service_account}"
+  stack:
+    name: base
+    kind: ClusterStack
+  store:
+    name: paketo-django
+    kind: ClusterStore
+  order:
+  - group:
+    - id: paketo-buildpacks/python
