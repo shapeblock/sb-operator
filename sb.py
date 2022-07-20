@@ -1,5 +1,6 @@
 import os
 import time
+import datetime
 import requests
 import kopf
 from kubernetes import client
@@ -185,18 +186,28 @@ def trigger_helm_release(name, namespace, labels, spec, status, new, logger, **k
 
 
 @kopf.on.update('applications')
-def update_app(spec, name, namespace, logger, **kwargs):
+def update_app(spec, name, namespace, logger, diff, **kwargs):
     logger.info(f"An application is updated with spec: {spec}")
+    logger.info(f"Here's the diff: {diff}")
     api = client.CustomObjectsApi()
     git_info = spec.get('git')
     ref = git_info.get('ref')
     # TODO: patch should update more stuff.
+    # If config change, add a build env var. It is harmless and triggers a new build.
     patch_body = {
         "spec": {
             "source": {
                 "git": {
                     "revision": ref,
                 }
+            },
+            "build": {
+                "env": [
+                    {
+                        "name": "SB_TS",
+                        "value": str(datetime.datetime.now()),
+                    },
+                ]
             }
         }
     }
