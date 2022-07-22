@@ -7,8 +7,14 @@ from kubernetes import client
 import yaml
 from kubernetes.client.rest import ApiException
 
-sb_url = os.getenv('SB_URL')
+def get_sb_url(sb_url):
+    if sb_url.startswith('https://'):
+        return sb_url
+    return f'https://{sb_url}'
+
+sb_url = get_sb_url(os.getenv('SB_URL'))
 cluster_id = os.getenv('CLUSTER_ID')
+
 
 @kopf.on.create('projects')
 def create_project(spec, name, labels, logger, **kwargs):
