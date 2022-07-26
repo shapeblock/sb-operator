@@ -4,7 +4,7 @@ metadata:
   annotations:
   name: "{name}"
   labels:
-    shapeblock.com/app-uuid: {{ app_uuid }}
+    shapeblock.com/app-uuid: "{app_uuid}"
 spec:
   builder:
     kind: Builder

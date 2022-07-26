@@ -3,7 +3,7 @@ kind: Builder
 metadata:
   name: "{name}"
   labels:
-    shapeblock.com/app-uuid: {{ app_uuid }}
+    shapeblock.com/app-uuid: "{app_uuid}"
 spec:
   tag: "{tag}"
   serviceAccountName: "{service_account}"
