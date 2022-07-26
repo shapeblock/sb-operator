@@ -2,6 +2,8 @@ apiVersion: helm.fluxcd.io/v1
 kind: HelmRelease
 metadata:
   name: "{name}"
+  labels:
+    shapeblock.com/app-uuid: {{ app_uuid }}
 spec:
   chart:
     name: "{chart_name}"

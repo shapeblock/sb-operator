@@ -18,7 +18,6 @@ cluster_id = os.getenv('CLUSTER_ID')
 
 @kopf.on.create('projects')
 def create_project(spec, name, labels, logger, **kwargs):
-    # TODO: add label
     # TODO: check if project already exists
     project_uuid = labels['shapeblock.com/project-uuid']
     logger.info(f"A project is created with spec: {spec}")
@@ -85,8 +84,8 @@ def create_service_account(name, namespace, logger):
     return service_account
 
 @kopf.on.create('applications')
-def create_app(spec, name, namespace, logger, **kwargs):
-    # TODO: add label
+def create_app(spec, name, labels, namespace, logger, **kwargs):
+    app_uuid = labels['shapeblock.com/app-uuid']
     logger.info(f"An application is created with spec: {spec}")
     api = client.CustomObjectsApi()
     # create service account
@@ -106,6 +105,7 @@ def create_app(spec, name, namespace, logger, **kwargs):
             logger.error(f'Unable to update service account for app {name} in project {namespace}.')
             return
     # Create builder
+    # TODO: send info to SB after creating builder and image.
     try:
         resource = api.get_namespaced_custom_object(
             group="kpack.io",
@@ -122,7 +122,7 @@ def create_app(spec, name, namespace, logger, **kwargs):
             stack = chart_info.get('name')
             path = os.path.join(os.path.dirname(__file__), f'builder-{stack}.yaml')
             tmpl = open(path, 'rt').read()
-            text = tmpl.format(name=name, tag=tag, service_account=name)
+            text = tmpl.format(name=name, tag=tag, service_account=name, app_uuid=app_uuid)
             data = yaml.safe_load(text)
             response = api.create_namespaced_custom_object(
                 group="kpack.io",
@@ -153,7 +153,7 @@ def create_app(spec, name, namespace, logger, **kwargs):
             builder = name
             path = os.path.join(os.path.dirname(__file__), 'image.yaml')
             tmpl = open(path, 'rt').read()
-            text = tmpl.format(name=name, tag=tag, service_account=service_account, repo=repo, ref=ref, builder_name=builder)
+            text = tmpl.format(name=name, tag=tag, service_account=service_account, repo=repo, ref=ref, builder_name=builder, app_uuid=app_uuid)
             data = yaml.safe_load(text)
             response = api.create_namespaced_custom_object(
                 group="kpack.io",
@@ -167,12 +167,15 @@ def create_app(spec, name, namespace, logger, **kwargs):
 @kopf.on.update('kpack.io', 'v1alpha2', 'builds')
 def update_build(spec, status, name, namespace, logger, labels, **kwargs):
     logger.info(f'------------------ {name}')
+    app_uuid = labels['shapeblock.com/app-uuid']
     if status.get('stepsCompleted') == ['prepare']:
         logger.info('POSTing build pod info.')
         data = {
             'pod': status['podName'],
             'name': labels['image.kpack.io/image'],
             'namespace': namespace,
+            'cluster_id': cluster_id,
+            'app_uuid': app_uuid,
         }
         response = requests.post(f"{sb_url}/build-pod/", json=data)
         logger.info(f"Update handler for build with status: {status}")
@@ -188,7 +191,8 @@ def trigger_helm_release(name, namespace, labels, spec, status, new, logger, **k
         app_name = labels['image.kpack.io/image']
         logger.info(f"Deploying app: {app_name}")
         # create helmrelease.
-        create_helmrelease(app_name, namespace, tag, logger)
+        app_uuid = labels['shapeblock.com/app-uuid']
+        create_helmrelease(app_name, app_uuid, namespace, tag, logger)
 
 
 @kopf.on.update('applications')
@@ -213,10 +217,22 @@ def update_app(spec, name, namespace, logger, diff, **kwargs):
                         "name": "SB_TS",
                         "value": str(datetime.datetime.now()),
                     },
+                    {
+                        "name": "BP_PHP_WEB_DIR",
+                        "value": "web",
+                    },
+                    {
+                        "name": "BP_PHP_VERSION",
+                        "value": "8.1",
+                    },
                 ]
             }
         }
     }
+    chart_info = spec.get('chart')
+    build_envs = chart_info.get('build')
+    for build_env in build_envs:
+        logger.info(build_env)
     response = api.patch_namespaced_custom_object(
         group="kpack.io",
         version="v1alpha2",
@@ -230,7 +246,8 @@ def update_app(spec, name, namespace, logger, diff, **kwargs):
 
 
 @kopf.on.field('helm.fluxcd.io', 'v1', 'helmreleases', field='status.observedGeneration')
-def notify_helm_release(old, new, diff, namespace, name, logger, **kwargs):
+def notify_helm_release(old, new, labels, diff, namespace, name, logger, **kwargs):
+    app_uuid = labels['shapeblock.com/app-uuid']
     logger.info(f"------O----------- old: {old}")
     logger.info(f"------O----------- new: {new}")
     logger.info(f'-------O---------- new: {new}')
@@ -239,6 +256,8 @@ def notify_helm_release(old, new, diff, namespace, name, logger, **kwargs):
     data = {
         'name': name,
         'namespace': namespace,
+        'app_uuid': app_uuid,
+        'status': new,
     }
     response = requests.post(f"{sb_url}/helm-status/", json=data)
     logger.info(f"Updates Helm release status for {name} successfully.")
@@ -334,7 +353,7 @@ def send_cluster_admin_account(logger):
 # TODO: daemon to update kpack base images
 # TODO: daemon to send status to SB every x hrs
 
-def create_helmrelease(name, namespace, tag, logger):
+def create_helmrelease(name, app_uuid, namespace, tag, logger):
     # TODO: add label
     api = client.CustomObjectsApi()
     try:
@@ -398,6 +417,7 @@ def create_helmrelease(name, namespace, tag, logger):
                             chart_name=chart_name,
                             chart_repo=chart_repo,
                             chart_version=chart_version,
+                            app_uuid=app_uuid,
                             )
             data = yaml.safe_load(text)
             data['spec']['values'] = yaml.safe_load(chart_values)
