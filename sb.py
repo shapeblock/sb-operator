@@ -111,7 +111,9 @@ def create_service_account(name, namespace, logger):
 
 @kopf.on.create('applications')
 def create_app(spec, name, labels, namespace, logger, **kwargs):
-    app_uuid = labels['shapeblock.com/app-uuid']
+    app_uuid = labels.get('shapeblock.com/app-uuid')
+    if not app_uuid:
+        return
     logger.debug(f"An application is created with spec: {spec}")
     api = client.CustomObjectsApi()
     # create service account
@@ -211,7 +213,9 @@ def create_app(spec, name, labels, namespace, logger, **kwargs):
 
 @kopf.on.update('kpack.io', 'v1alpha2', 'builds')
 def update_build(spec, status, name, namespace, logger, labels, **kwargs):    
-    app_uuid = labels['shapeblock.com/app-uuid']
+    app_uuid = labels.get('shapeblock.com/app-uuid')
+    if not app_uuid:
+        return
     app_name = labels['image.kpack.io/image']
     app_status = get_app_status(namespace, app_name, logger)
     if 'update_app' in app_status.keys():
@@ -245,7 +249,9 @@ def trigger_helm_release(name, namespace, labels, spec, status, new, logger, **k
         app_name = labels['image.kpack.io/image']
         logger.info(f"Deploying app: {app_name}")
         # create helmrelease.
-        app_uuid = labels['shapeblock.com/app-uuid']
+        app_uuid = labels.get('shapeblock.com/app-uuid')
+        if not app_uuid:
+            return
         app_status = get_app_status(namespace, app_name, logger)
         if 'update_app' in app_status.keys():
             deployment_uuid = app_status['update_app'].get('lastDeployment')
@@ -264,7 +270,9 @@ def trigger_helm_release(name, namespace, labels, spec, status, new, logger, **k
 @kopf.on.update('applications')
 def update_app(spec, name, namespace, logger, labels, diff, **kwargs):
     logger.debug(f"An application is updated with spec: {spec}")
-    app_uuid = labels['shapeblock.com/app-uuid']
+    app_uuid = labels.get('shapeblock.com/app-uuid')
+    if not app_uuid:
+        return
     response = requests.get(f"{sb_url}/apps/{app_uuid}/last-deployment/")
     if response.status_code == 200:
         deployment_uuid = response.json()['deployment']
@@ -301,7 +309,9 @@ def update_app(spec, name, namespace, logger, labels, diff, **kwargs):
         body=patch_body,
     )
     logger.info("Image patched.")
-    app_uuid = labels['shapeblock.com/app-uuid']
+    app_uuid = labels.get('shapeblock.com/app-uuid')
+    if not app_uuid:
+        return
     data = {
         'logs': 'Patched image.\n',
         'status': 'running',
@@ -312,9 +322,11 @@ def update_app(spec, name, namespace, logger, labels, diff, **kwargs):
     return {'lastDeployment': deployment_uuid}
 
 
-@kopf.on.field('helm.fluxcd.io', 'v1', 'helmreleases', field='status.observedGeneration')
+@kopf.on.field('helm.toolkit.fluxcd.io', 'v2beta1', 'helmreleases', field='status.observedGeneration')
 def notify_helm_release(old, new, labels, diff, namespace, name, logger, **kwargs):
-    app_uuid = labels['shapeblock.com/app-uuid']
+    app_uuid = labels.get('shapeblock.com/app-uuid')
+    if not app_uuid:
+        return
     logger.info(f"------O----------- old: {old}")
     logger.info(f"------O----------- new: {new}")
     logger.info(f'-------O---------- new: {new}')
@@ -370,8 +382,8 @@ def delete_app(spec, name, namespace, logger, **kwargs):
     # This will delete all build pods and objects.
     try:
         response = api.delete_namespaced_custom_object(
-            group="helm.fluxcd.io",
-            version="v1",
+            group="helm.toolkit.fluxcd.io",
+            version="v2beta1",
             name=name,
             namespace=namespace,
             plural="helmreleases",
@@ -453,8 +465,8 @@ def create_helmrelease(name, app_uuid, namespace, tag, logger):
         deployment_uuid = app_status['create_app'].get('lastDeployment')
     try:
         resource = api.get_namespaced_custom_object(
-            group="helm.fluxcd.io",
-            version="v1",
+            group="helm.toolkit.fluxcd.io",
+            version="v2beta1",
             name=name,
             namespace=namespace,
             plural="helmreleases",
@@ -477,8 +489,8 @@ def create_helmrelease(name, app_uuid, namespace, tag, logger):
         if stack in ['nodejs', 'django']:
             data['spec']['values']['image']['repository'] = tag
         response = api.patch_namespaced_custom_object(
-            group="helm.fluxcd.io",
-            version="v1",
+            group="helm.toolkit.fluxcd.io",
+            version="v2beta1",
             namespace=namespace,
             name=name,
             plural="helmreleases",
@@ -499,7 +511,7 @@ def create_helmrelease(name, app_uuid, namespace, tag, logger):
             chart_repo = chart_info.get('repo')
             chart_version = chart_info.get('version')
             chart_values = chart_info.get('values')
-            path = os.path.join(os.path.dirname(__file__), 'helmrelease.yaml')
+            path = os.path.join(os.path.dirname(__file__), 'helmrelease2.yaml')
             tmpl = open(path, 'rt').read()
             text = tmpl.format(name=name, 
                             chart_name=chart_name,
@@ -515,8 +527,8 @@ def create_helmrelease(name, app_uuid, namespace, tag, logger):
             if stack == 'nodejs':
                 data['spec']['values']['image']['repository'] = tag
             response = api.create_namespaced_custom_object(
-                group="helm.fluxcd.io",
-                version="v1",
+                group="helm.toolkit.fluxcd.io",
+                version="v2beta1",
                 namespace=namespace,
                 plural="helmreleases",
                 body=data,
