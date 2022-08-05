@@ -6,6 +6,32 @@ import kopf
 from kubernetes import client
 import yaml
 from kubernetes.client.rest import ApiException
+import pusher
+
+pusher_client = pusher.Pusher(
+  app_id='493518',
+  key='0d54c047764d470474af',
+  secret='b6d607c0af8ea2b66b4f',
+  cluster='mt1',
+  ssl=True
+)
+
+def trigger_chunked(pusher_client, app_uuid, event, data):
+    chunk_size = 9000
+    i = 0
+    logs = data.pop('logs')
+
+    while True:
+        iteration = i*chunk_size
+        data['index'] = i
+        data['chunk'] = logs[iteration:iteration + chunk_size],
+        data['final'] = chunk_size*(i+1) >= len(logs)
+        if len(logs[iteration:iteration + chunk_size]):
+            pusher_client.trigger(str(app_uuid), event, data)
+        if i*chunk_size > len(logs):
+            break
+        i=i+1
+
 
 def get_sb_url(sb_url):
     if sb_url.startswith('https://'):
@@ -86,7 +112,7 @@ def create_service_account(name, namespace, logger):
 @kopf.on.create('applications')
 def create_app(spec, name, labels, namespace, logger, **kwargs):
     app_uuid = labels['shapeblock.com/app-uuid']
-    logger.info(f"An application is created with spec: {spec}")
+    logger.debug(f"An application is created with spec: {spec}")
     api = client.CustomObjectsApi()
     # create service account
     service_account = create_service_account(name, namespace, logger)
@@ -102,10 +128,12 @@ def create_app(spec, name, labels, namespace, logger, **kwargs):
         try:
             service_account = core_v1.patch_namespaced_service_account(namespace=namespace, name=name, body=client.V1ServiceAccount(secrets=service_account.secrets))
         except:
-            logger.error(f'Unable to update service account for app {name} in project {namespace}.')
+            logger.error(f'??? Unable to update service account for app {name} in project {namespace}.')
             return
+    response = requests.get(f"{sb_url}/apps/{app_uuid}/last-deployment/")
+    if response.status_code == 200:
+        deployment_uuid = response.json()['deployment']
     # Create builder
-    # TODO: send info to SB after creating builder and image.
     try:
         resource = api.get_namespaced_custom_object(
             group="kpack.io",
@@ -132,6 +160,14 @@ def create_app(spec, name, labels, namespace, logger, **kwargs):
                 body=data,
             )
             logger.info("Builder created.")
+            data = {
+            'logs': 'Builder created.\n',
+            'status': 'running',
+            'app_uuid': app_uuid,
+            'deployment_uuid': deployment_uuid,
+            }
+            pusher_client.trigger(str(app_uuid), 'deployment', data)
+            #response = requests.post(f"{sb_url}/helm-status/", json=data)
 
     # create image
     try:
@@ -163,22 +199,40 @@ def create_app(spec, name, labels, namespace, logger, **kwargs):
                 body=data,
             )
             logger.info("Image created.")
+            data = {
+            'logs': 'Image created.\n',
+            'app_uuid': app_uuid,
+            'status': 'running',
+            'app_uuid': app_uuid,
+            'deployment_uuid': deployment_uuid,
+            }
+            pusher_client.trigger(str(app_uuid), 'deployment', data)
+    return {'lastDeployment': deployment_uuid}
 
 @kopf.on.update('kpack.io', 'v1alpha2', 'builds')
-def update_build(spec, status, name, namespace, logger, labels, **kwargs):
-    logger.info(f'------------------ {name}')
+def update_build(spec, status, name, namespace, logger, labels, **kwargs):    
     app_uuid = labels['shapeblock.com/app-uuid']
-    if status.get('stepsCompleted') == ['prepare']:
-        logger.info('POSTing build pod info.')
-        data = {
-            'pod': status['podName'],
-            'name': labels['image.kpack.io/image'],
-            'namespace': namespace,
-            'cluster_id': cluster_id,
+    app_name = labels['image.kpack.io/image']
+    app_status = get_app_status(namespace, app_name, logger)
+    if 'update_app' in app_status.keys():
+        deployment_uuid = app_status['update_app'].get('lastDeployment')
+    else:
+        deployment_uuid = app_status['create_app'].get('lastDeployment')
+    core_v1 = client.CoreV1Api()
+    data = {             
             'app_uuid': app_uuid,
-        }
-        response = requests.post(f"{sb_url}/build-pod/", json=data)
-        logger.info(f"Update handler for build with status: {status}")
+            'status': 'running',
+            'app_uuid': app_uuid,
+            'deployment_uuid': deployment_uuid,
+    }
+    steps_completed = status.get('stepsCompleted')
+    if steps_completed:
+        data['logs'] = core_v1.read_namespaced_pod_log(namespace=namespace, name=status['podName'], container=steps_completed[-1])
+        if len(data['logs']) > 9000:
+            trigger_chunked(pusher_client, str(app_uuid), 'chunked-deployment', data)
+        else:
+            if len(data['logs']):
+                pusher_client.trigger(str(app_uuid), 'deployment', data)
 
 
 @kopf.on.field('kpack.io', 'v1alpha2', 'builds', field='status.conditions')
@@ -192,17 +246,33 @@ def trigger_helm_release(name, namespace, labels, spec, status, new, logger, **k
         logger.info(f"Deploying app: {app_name}")
         # create helmrelease.
         app_uuid = labels['shapeblock.com/app-uuid']
+        app_status = get_app_status(namespace, app_name, logger)
+        if 'update_app' in app_status.keys():
+            deployment_uuid = app_status['update_app'].get('lastDeployment')
+        else:
+            deployment_uuid = app_status['create_app'].get('lastDeployment')
+        data = {
+            'logs': 'Triggering Helm release.\n',
+            'status': 'running',
+            'app_uuid': app_uuid,
+            'deployment_uuid': deployment_uuid,
+        }
+        pusher_client.trigger(str(app_uuid), 'deployment', data)
         create_helmrelease(app_name, app_uuid, namespace, tag, logger)
 
 
 @kopf.on.update('applications')
-def update_app(spec, name, namespace, logger, diff, **kwargs):
-    logger.info(f"An application is updated with spec: {spec}")
-    logger.info(f"Here's the diff: {diff}")
+def update_app(spec, name, namespace, logger, labels, diff, **kwargs):
+    logger.debug(f"An application is updated with spec: {spec}")
+    app_uuid = labels['shapeblock.com/app-uuid']
+    response = requests.get(f"{sb_url}/apps/{app_uuid}/last-deployment/")
+    if response.status_code == 200:
+        deployment_uuid = response.json()['deployment']
     api = client.CustomObjectsApi()
     git_info = spec.get('git')
     ref = git_info.get('ref')
-    # TODO: patch should update more stuff.
+    chart_info = spec.get('chart')
+    build_envs = chart_info.get('build')
     # If config change, add a build env var. It is harmless and triggers a new build.
     patch_body = {
         "spec": {
@@ -212,27 +282,16 @@ def update_app(spec, name, namespace, logger, diff, **kwargs):
                 }
             },
             "build": {
-                "env": [
-                    {
-                        "name": "SB_TS",
-                        "value": str(datetime.datetime.now()),
-                    },
-                    {
-                        "name": "BP_PHP_WEB_DIR",
-                        "value": "web",
-                    },
-                    {
-                        "name": "BP_PHP_VERSION",
-                        "value": "8.1",
-                    },
-                ]
+                "env": build_envs,
             }
         }
     }
-    chart_info = spec.get('chart')
-    build_envs = chart_info.get('build')
-    for build_env in build_envs:
-        logger.info(build_env)
+    build_ts = {
+                "name": "SB_TS",
+                "value": str(datetime.datetime.now()),
+    }
+    patch_body['spec']['build']['env'].append(build_ts)
+    logger.info(patch_body)
     response = api.patch_namespaced_custom_object(
         group="kpack.io",
         version="v1alpha2",
@@ -242,7 +301,15 @@ def update_app(spec, name, namespace, logger, diff, **kwargs):
         body=patch_body,
     )
     logger.info("Image patched.")
-
+    app_uuid = labels['shapeblock.com/app-uuid']
+    data = {
+        'logs': 'Patched image.\n',
+        'status': 'running',
+        'app_uuid': app_uuid,
+        'deployment_uuid': deployment_uuid,
+    }
+    pusher_client.trigger(str(app_uuid), 'deployment', data)
+    return {'lastDeployment': deployment_uuid}
 
 
 @kopf.on.field('helm.fluxcd.io', 'v1', 'helmreleases', field='status.observedGeneration')
@@ -252,15 +319,22 @@ def notify_helm_release(old, new, labels, diff, namespace, name, logger, **kwarg
     logger.info(f"------O----------- new: {new}")
     logger.info(f'-------O---------- new: {new}')
     logger.info('POSTing helm release status.')
+    app_status = get_app_status(namespace, name, logger)
+    if 'update_app' in app_status.keys():
+        deployment_uuid = app_status['update_app'].get('lastDeployment')
+    else:
+        deployment_uuid = app_status['create_app'].get('lastDeployment')
     #TODO: check if helm status is successful.
     data = {
-        'name': name,
-        'namespace': namespace,
+        'logs': 'Notify helm release.\n',
+        'status': 'success',
         'app_uuid': app_uuid,
-        'status': new,
+        'deployment_uuid': deployment_uuid,
     }
-    response = requests.post(f"{sb_url}/helm-status/", json=data)
+    pusher_client.trigger(str(app_uuid), 'deployment', data)
     logger.info(f"Updates Helm release status for {name} successfully.")
+    #TODO update app status with last deployment
+    response = requests.post(f"{sb_url}/helm-status/", json=data)
 
 
 @kopf.on.delete('applications')
@@ -306,6 +380,8 @@ def delete_app(spec, name, namespace, logger, **kwargs):
         logger.info("Helm release deleted.")
     except:
         logger.info('Unable to delete helm release.')
+    # Delete any job
+    # Delete ingress tls secret
     # Delete volumes if any    
     core_v1 = client.CoreV1Api()
     label = f"app.kubernetes.io/instance={namespace}-{name}"
@@ -366,10 +442,15 @@ def create_helmrelease(name, app_uuid, namespace, tag, logger):
         )
     except ApiException as error:
         if error.status == 404:
-            logger.error(f"Application {name} not found in namespace {namespace}.")
+            logger.error(f"??? Application {name} not found in namespace {namespace}.")
             return
     spec = app.get('spec')
     logger.info(f"App spec: {spec}.")
+    app_status = get_app_status(namespace, name, logger)
+    if 'update_app' in app_status.keys():
+        deployment_uuid = app_status['update_app'].get('lastDeployment')
+    else:
+        deployment_uuid = app_status['create_app'].get('lastDeployment')
     try:
         resource = api.get_namespaced_custom_object(
             group="helm.fluxcd.io",
@@ -404,6 +485,13 @@ def create_helmrelease(name, app_uuid, namespace, tag, logger):
             body=data,
         )
         logger.info("Helmrelease patched.")
+        data = {
+            'logs': 'Patched Helm Release.\n',
+            'status': 'running',
+            'app_uuid': app_uuid,
+            'deployment_uuid': deployment_uuid,
+        }
+        pusher_client.trigger(str(app_uuid), 'deployment', data)
     except ApiException as error:
         if error.status == 404:
             chart_info = spec.get('chart')
@@ -434,3 +522,28 @@ def create_helmrelease(name, app_uuid, namespace, tag, logger):
                 body=data,
             )
             logger.info("Helmrelease created.")
+            data = {
+            'logs': 'Helm release created.\n',
+            'status': 'running',
+            'app_uuid': app_uuid,
+            'deployment_uuid': deployment_uuid,
+            }
+            pusher_client.trigger(str(app_uuid), 'deployment', data)
+            #response = requests.post(f"{sb_url}/helm-status/", json=data)
+
+
+def get_app_status(namespace, name, logger):
+    api = client.CustomObjectsApi()
+    try:
+        app = api.get_namespaced_custom_object(
+            group="dev.shapeblock.com",
+            version="v1alpha1",
+            name=name,
+            namespace=namespace,
+            plural="applications",
+        )
+    except ApiException as error:
+        if error.status == 404:
+            logger.error(f"??? Application {name} not found in namespace {namespace}.")
+            return
+    return app['status']

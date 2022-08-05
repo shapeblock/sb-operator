@@ -49,6 +49,15 @@ spec:
                     type: string
                   version:
                     type: string
+                  build:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name:
+                          type: string
+                        value:
+                          type: string
                 type: object
               git:
                 properties:
@@ -63,6 +72,7 @@ spec:
                 type: string
             type: object
           status:
+            x-kubernetes-preserve-unknown-fields: true
             description: ApplicationStatus defines the observed state of Application
             properties:
               deployed:
