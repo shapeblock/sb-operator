@@ -169,6 +169,7 @@ def create_app(spec, name, labels, namespace, logger, **kwargs):
             'deployment_uuid': deployment_uuid,
             }
             pusher_client.trigger(str(app_uuid), 'deployment', data)
+            response = requests.post(f"{sb_url}/deployments/", json=data)
             #response = requests.post(f"{sb_url}/helm-status/", json=data)
 
     # create image
@@ -209,10 +210,11 @@ def create_app(spec, name, labels, namespace, logger, **kwargs):
             'deployment_uuid': deployment_uuid,
             }
             pusher_client.trigger(str(app_uuid), 'deployment', data)
+            response = requests.post(f"{sb_url}/deployments/", json=data)
     return {'lastDeployment': deployment_uuid}
 
 @kopf.on.update('kpack.io', 'v1alpha2', 'builds')
-def update_build(spec, status, name, namespace, logger, labels, **kwargs):    
+def update_build(spec, status, name, namespace, logger, labels, **kwargs):
     app_uuid = labels.get('shapeblock.com/app-uuid')
     if not app_uuid:
         return
@@ -223,7 +225,7 @@ def update_build(spec, status, name, namespace, logger, labels, **kwargs):
     else:
         deployment_uuid = app_status['create_app'].get('lastDeployment')
     core_v1 = client.CoreV1Api()
-    data = {             
+    data = {
             'app_uuid': app_uuid,
             'status': 'running',
             'app_uuid': app_uuid,
@@ -237,7 +239,7 @@ def update_build(spec, status, name, namespace, logger, labels, **kwargs):
         else:
             if len(data['logs']):
                 pusher_client.trigger(str(app_uuid), 'deployment', data)
-
+        response = requests.post(f"{sb_url}/deployments/", json=data)
 
 @kopf.on.field('kpack.io', 'v1alpha2', 'builds', field='status.conditions')
 def trigger_helm_release(name, namespace, labels, spec, status, new, logger, **kwargs):
@@ -264,6 +266,7 @@ def trigger_helm_release(name, namespace, labels, spec, status, new, logger, **k
             'deployment_uuid': deployment_uuid,
         }
         pusher_client.trigger(str(app_uuid), 'deployment', data)
+        response = requests.post(f"{sb_url}/deployments/", json=data)
         create_helmrelease(app_name, app_uuid, namespace, tag, logger)
 
 
@@ -319,6 +322,7 @@ def update_app(spec, name, namespace, logger, labels, diff, **kwargs):
         'deployment_uuid': deployment_uuid,
     }
     pusher_client.trigger(str(app_uuid), 'deployment', data)
+    response = requests.post(f"{sb_url}/deployments/", json=data)
     return {'lastDeployment': deployment_uuid}
 
 
@@ -345,14 +349,13 @@ def notify_helm_release(old, new, labels, diff, namespace, name, logger, **kwarg
     }
     pusher_client.trigger(str(app_uuid), 'deployment', data)
     logger.info(f"Updates Helm release status for {name} successfully.")
-    #TODO update app status with last deployment
-    response = requests.post(f"{sb_url}/helm-status/", json=data)
+    response = requests.post(f"{sb_url}/deployments/", json=data)
 
 
 @kopf.on.delete('applications')
 def delete_app(spec, name, namespace, logger, **kwargs):
     logger.info(f"An application is deleted with spec: {spec}")
-    api = client.CustomObjectsApi()    
+    api = client.CustomObjectsApi()
     try:
         response = api.delete_namespaced_custom_object(
             group="kpack.io",
@@ -394,7 +397,7 @@ def delete_app(spec, name, namespace, logger, **kwargs):
         logger.info('Unable to delete helm release.')
     # Delete any job
     # Delete ingress tls secret
-    # Delete volumes if any    
+    # Delete volumes if any
     core_v1 = client.CoreV1Api()
     label = f"app.kubernetes.io/instance={namespace}-{name}"
     pvcs = core_v1.list_namespaced_persistent_volume_claim(namespace=namespace, label_selector=label)
@@ -402,7 +405,7 @@ def delete_app(spec, name, namespace, logger, **kwargs):
         resp = core_v1.delete_namespaced_persistent_volume_claim(namespace=namespace, body=client.V1DeleteOptions(), name=pvc.metadata.name)
         logger.info(f'Deleting PVC {pvc.metadata.name}')
     logger.info("volumes deleted.")
-    
+
     # delete secret
     try:
         logger.info('Deleting secrets.')
@@ -504,6 +507,7 @@ def create_helmrelease(name, app_uuid, namespace, tag, logger):
             'deployment_uuid': deployment_uuid,
         }
         pusher_client.trigger(str(app_uuid), 'deployment', data)
+        response = requests.post(f"{sb_url}/deployments/", json=data)
     except ApiException as error:
         if error.status == 404:
             chart_info = spec.get('chart')
@@ -513,7 +517,7 @@ def create_helmrelease(name, app_uuid, namespace, tag, logger):
             chart_values = chart_info.get('values')
             path = os.path.join(os.path.dirname(__file__), 'helmrelease2.yaml')
             tmpl = open(path, 'rt').read()
-            text = tmpl.format(name=name, 
+            text = tmpl.format(name=name,
                             chart_name=chart_name,
                             chart_repo=chart_repo,
                             chart_version=chart_version,
@@ -541,6 +545,7 @@ def create_helmrelease(name, app_uuid, namespace, tag, logger):
             'deployment_uuid': deployment_uuid,
             }
             pusher_client.trigger(str(app_uuid), 'deployment', data)
+            response = requests.post(f"{sb_url}/deployments/", json=data)
             #response = requests.post(f"{sb_url}/helm-status/", json=data)
 
 

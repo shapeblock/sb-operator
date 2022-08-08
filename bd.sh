@@ -1,5 +1,5 @@
 #!/bin/bash -x
-version="0.0.9"
+version="1.0"
 docker build -t shapeblock/sb-operator:${version} .
 docker push shapeblock/sb-operator:${version}
 # sed 's/__VERSION__/'"$version"'/g' deployment.yaml > /tmp/deployment.yaml
