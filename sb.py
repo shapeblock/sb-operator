@@ -1,9 +1,10 @@
 import os
 import time
 import datetime
+from typing import Dict
 import requests
 import kopf
-from kubernetes import client
+from kubernetes import client, config
 import yaml
 from kubernetes.client.rest import ApiException
 import pusher
@@ -46,7 +47,7 @@ cluster_id = os.getenv('CLUSTER_ID')
 def create_project(spec, name, labels, logger, **kwargs):
     # TODO: check if project already exists
     project_uuid = labels['shapeblock.com/project-uuid']
-    logger.info(f"A project is created with spec: {spec}")
+    logger.debug(f"A project is created with spec: {spec}")
     logger.info(f"Create a namespace")
     create_namespace(name)
     logger.info(f"Create registry credentials")
@@ -56,7 +57,7 @@ def create_project(spec, name, labels, logger, **kwargs):
     create_role_binding(name)
     core_v1 = client.CoreV1Api()
     resp = core_v1.read_namespaced_service_account(namespace=name, name=name)
-    logger.info(resp)
+    logger.debug(resp)
     for secret in resp.secrets:
         if f'{name}-token' in secret.name:
             secret_response = core_v1.read_namespaced_secret(namespace=name, name=secret.name)
@@ -243,7 +244,7 @@ def update_build(spec, status, name, namespace, logger, labels, **kwargs):
 
 @kopf.on.field('kpack.io', 'v1alpha2', 'builds', field='status.conditions')
 def trigger_helm_release(name, namespace, labels, spec, status, new, logger, **kwargs):
-    logger.info(f"Update handler for build with status: {status}")
+    logger.debug(f"Update handler for build with status: {status}")
     status = new[0]
     if status.get('type') == 'Succeeded' and status.get('status') == 'True':
         tag = spec.get('tags')[1]
@@ -268,10 +269,17 @@ def trigger_helm_release(name, namespace, labels, spec, status, new, logger, **k
         pusher_client.trigger(str(app_uuid), 'deployment', data)
         response = requests.post(f"{sb_url}/deployments/", json=data)
         create_helmrelease(app_name, app_uuid, namespace, tag, logger)
+        # Update the latest image tag in app status
+        update_app_status(namespace, app_name, tag, logger)
 
+def get_last_tag(status: Dict):
+    """
+    Get last deployed tag from application status.
+    """
+    return status['lastTag']
 
 @kopf.on.update('applications')
-def update_app(spec, name, namespace, logger, labels, diff, **kwargs):
+def update_app(spec, name, namespace, logger, labels, status, **kwargs):
     logger.debug(f"An application is updated with spec: {spec}")
     app_uuid = labels.get('shapeblock.com/app-uuid')
     if not app_uuid:
@@ -279,6 +287,14 @@ def update_app(spec, name, namespace, logger, labels, diff, **kwargs):
     response = requests.get(f"{sb_url}/apps/{app_uuid}/last-deployment/")
     if response.status_code == 200:
         deployment_uuid = response.json()['deployment']
+        deployment_type = response.json()['type']
+        # if app scale, then skip building and trigger a helm release directly.
+        if deployment_type == 'scale':
+            tag = get_last_tag(status)
+            # update app status with last deployment
+            update_app_deployment_status(namespace, name, deployment_uuid, logger)
+            create_helmrelease(name, app_uuid, namespace, tag, logger)
+            return
     api = client.CustomObjectsApi()
     git_info = spec.get('git')
     ref = git_info.get('ref')
@@ -302,7 +318,7 @@ def update_app(spec, name, namespace, logger, labels, diff, **kwargs):
                 "value": str(datetime.datetime.now()),
     }
     patch_body['spec']['build']['env'].append(build_ts)
-    logger.info(patch_body)
+    logger.debug(patch_body)
     response = api.patch_namespaced_custom_object(
         group="kpack.io",
         version="v1alpha2",
@@ -331,9 +347,6 @@ def notify_helm_release(old, new, labels, diff, namespace, name, logger, **kwarg
     app_uuid = labels.get('shapeblock.com/app-uuid')
     if not app_uuid:
         return
-    logger.info(f"------O----------- old: {old}")
-    logger.info(f"------O----------- new: {new}")
-    logger.info(f'-------O---------- new: {new}')
     logger.info('POSTing helm release status.')
     app_status = get_app_status(namespace, name, logger)
     if 'update_app' in app_status.keys():
@@ -348,13 +361,13 @@ def notify_helm_release(old, new, labels, diff, namespace, name, logger, **kwarg
         'deployment_uuid': deployment_uuid,
     }
     pusher_client.trigger(str(app_uuid), 'deployment', data)
-    logger.info(f"Updates Helm release status for {name} successfully.")
+    logger.info(f"Updated Helm release status for {name} successfully.")
     response = requests.post(f"{sb_url}/deployments/", json=data)
 
 
 @kopf.on.delete('applications')
 def delete_app(spec, name, namespace, logger, **kwargs):
-    logger.info(f"An application is deleted with spec: {spec}")
+    logger.debug(f"An application is deleted with spec: {spec}")
     api = client.CustomObjectsApi()
     try:
         response = api.delete_namespaced_custom_object(
@@ -439,6 +452,13 @@ def send_cluster_admin_account(logger):
     response = requests.post(f"{sb_url}/clusters/{cluster_id}/token-info", json=data)
     if response.status_code == 202:
         logger.info("POSTed token info.")
+    nodes = get_nodes_info()
+    response = requests.post(f"{sb_url}/clusters/{cluster_id}/nodes", json=nodes)
+    if response.status_code == 201:
+        logger.info("POSTed node info.")
+    else:
+        logger.error('Unable to send node information.')
+
 
 
 # TODO: daemon to update kpack base images
@@ -460,7 +480,7 @@ def create_helmrelease(name, app_uuid, namespace, tag, logger):
             logger.error(f"??? Application {name} not found in namespace {namespace}.")
             return
     spec = app.get('spec')
-    logger.info(f"App spec: {spec}.")
+    logger.debug(f"App spec: {spec}.")
     app_status = get_app_status(namespace, name, logger)
     if 'update_app' in app_status.keys():
         deployment_uuid = app_status['update_app'].get('lastDeployment')
@@ -564,3 +584,79 @@ def get_app_status(namespace, name, logger):
             logger.error(f"??? Application {name} not found in namespace {namespace}.")
             return
     return app['status']
+
+def update_app_status(namespace, name, tag, logger):
+    api = client.CustomObjectsApi()
+    try:
+        app = api.get_namespaced_custom_object(
+            group="dev.shapeblock.com",
+            version="v1alpha1",
+            name=name,
+            namespace=namespace,
+            plural="applications",
+        )
+    except ApiException as error:
+        if error.status == 404:
+            logger.error(f"??? Application {name} not found in namespace {namespace}.")
+            return
+    try:
+        patched_body = {'status': {'lastTag' : tag }}
+        response = api.patch_namespaced_custom_object_status(
+            group="dev.shapeblock.com",
+            version="v1alpha1",
+            namespace=namespace,
+            name=name,
+            plural="applications",
+            body=patched_body,
+        )
+        logger.info(f"Application {name} patched with tag {tag}.")
+    except ApiException as error:
+        logger.error(f"??? Unable to update status of application {name} in namespace {namespace}.")
+
+def update_app_deployment_status(namespace, name, deployment, logger):
+    api = client.CustomObjectsApi()
+    try:
+        app = api.get_namespaced_custom_object(
+            group="dev.shapeblock.com",
+            version="v1alpha1",
+            name=name,
+            namespace=namespace,
+            plural="applications",
+        )
+    except ApiException as error:
+        if error.status == 404:
+            logger.error(f"??? Application {name} not found in namespace {namespace}.")
+            return
+    try:
+        patched_body = {
+            'status': {
+                'update_app': {
+                    'lastDeployment' : deployment,
+                },
+            }
+        }
+        response = api.patch_namespaced_custom_object_status(
+            group="dev.shapeblock.com",
+            version="v1alpha1",
+            namespace=namespace,
+            name=name,
+            plural="applications",
+            body=patched_body,
+        )
+        logger.info(f"Application {name} patched with deployment ID {deployment}.")
+    except ApiException as error:
+        logger.error(f"??? Unable to update deployment status of application {name} in namespace {namespace}.")
+
+
+def get_nodes_info():
+    node_data = []
+    config.load_incluster_config()
+    core_v1 = client.CoreV1Api()
+    nodes = core_v1.list_node()
+    for node in nodes.items:
+        node_info = {
+            'name': node.metadata.name,
+            'memory': node.status.capacity['memory'],
+        }
+        node_data.append(node_info)
+    return node_data
