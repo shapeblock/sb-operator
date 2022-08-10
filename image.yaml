@@ -9,12 +9,6 @@ spec:
   builder:
     kind: Builder
     name: "{builder_name}"
-  build:
-    env:
-      - name: BP_PHP_WEB_DIR
-        value: "web"
-      - name: BP_PHP_VERSION
-        value: "8.1"
   cache:
     volume:
       size: "2Gi"
