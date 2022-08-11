@@ -459,7 +459,12 @@ def send_cluster_admin_account(logger):
     else:
         logger.error('Unable to send node information.')
 
-
+@kopf.on.cleanup()
+async def cleanup_fn(logger, **kwargs):
+    nodes = get_nodes_info()
+    response = requests.post(f"{sb_url}/clusters/{cluster_id}/nodes-delete", json=nodes)
+    if response.status_code == 201:
+        logger.info("DELETE node info.")
 
 # TODO: daemon to update kpack base images
 # TODO: daemon to send status to SB every x hrs
@@ -647,6 +652,29 @@ def update_app_deployment_status(namespace, name, deployment, logger):
     except ApiException as error:
         logger.error(f"??? Unable to update deployment status of application {name} in namespace {namespace}.")
 
+@kopf.on.create('nodes')
+def add_node(status, name, logger, **kwargs):
+    node_data = []
+    node_info = {
+        'name': name,
+        'memory': status['capacity']['memory'],
+    }
+    node_data.append(node_info)
+    response = requests.post(f"{sb_url}/clusters/{cluster_id}/nodes", json=node_data)
+    if response.status_code == 201:
+        logger.info(f"POSTed node info for node {name}.")
+
+@kopf.on.delete('nodes')
+def remove_node(status, name, logger, **kwargs):
+    node_data = []
+    node_info = {
+        'name': name,
+        'memory': status['capacity']['memory'],
+    }
+    node_data.append(node_info)
+    response = requests.post(f"{sb_url}/clusters/{cluster_id}/nodes-delete", json=node_data)
+    if response.status_code == 201:
+        logger.info("DELETEd node info for node {name}.")
 
 def get_nodes_info():
     node_data = []

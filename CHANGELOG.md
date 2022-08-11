@@ -1,5 +1,11 @@
 # Changelog
 
+## 2022-08-11
+
+### Changed
+- node create and delete notifications
+- shutdown sends node delete message.
+
 ## 2022-08-08
 
 ### Changed
