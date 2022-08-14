@@ -244,22 +244,22 @@ def update_build(spec, status, name, namespace, logger, labels, **kwargs):
 
 @kopf.on.field('kpack.io', 'v1alpha2', 'builds', field='status.conditions')
 def trigger_helm_release(name, namespace, labels, spec, status, new, logger, **kwargs):
-    logger.debug(f"Update handler for build with status: {status}")
+    logger.info(f"Update handler for build with status: {status}")
+    app_uuid = labels.get('shapeblock.com/app-uuid')
+    if not app_uuid:
+        return
+    app_name = labels['image.kpack.io/image']
+    app_status = get_app_status(namespace, app_name, logger)
+    if 'update_app' in app_status.keys():
+        deployment_uuid = app_status['update_app'].get('lastDeployment')
+    else:
+        deployment_uuid = app_status['create_app'].get('lastDeployment')
     status = new[0]
     if status.get('type') == 'Succeeded' and status.get('status') == 'True':
         tag = spec.get('tags')[1]
         logger.info(f"New image created: {tag}")
-        app_name = labels['image.kpack.io/image']
         logger.info(f"Deploying app: {app_name}")
         # create helmrelease.
-        app_uuid = labels.get('shapeblock.com/app-uuid')
-        if not app_uuid:
-            return
-        app_status = get_app_status(namespace, app_name, logger)
-        if 'update_app' in app_status.keys():
-            deployment_uuid = app_status['update_app'].get('lastDeployment')
-        else:
-            deployment_uuid = app_status['create_app'].get('lastDeployment')
         data = {
             'logs': 'Triggering Helm release.\n',
             'status': 'running',
@@ -271,6 +271,15 @@ def trigger_helm_release(name, namespace, labels, spec, status, new, logger, **k
         create_helmrelease(app_name, app_uuid, namespace, tag, logger)
         # Update the latest image tag in app status
         update_app_status(namespace, app_name, tag, logger)
+    if status.get('type') == 'Succeeded' and status.get('status') == 'False':
+        data = {
+            'logs': 'Build stage failed.\n',
+            'status': 'failed',
+            'app_uuid': app_uuid,
+            'deployment_uuid': deployment_uuid,
+        }
+        pusher_client.trigger(str(app_uuid), 'deployment', data)
+        response = requests.post(f"{sb_url}/deployments/", json=data)
 
 def get_last_tag(status: Dict):
     """
@@ -300,6 +309,7 @@ def update_app(spec, name, namespace, logger, labels, status, **kwargs):
     ref = git_info.get('ref')
     chart_info = spec.get('chart')
     build_envs = chart_info.get('build')
+    # TODO: Create image and build if it doesn't exist already
     # If config change, add a build env var. It is harmless and triggers a new build.
     patch_body = {
         "spec": {

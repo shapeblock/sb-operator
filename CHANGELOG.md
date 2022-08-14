@@ -1,5 +1,10 @@
 # Changelog
 
+## 2022-08-14
+
+### Changed
+- Send failure message to backend on build failure.
+
 ## 2022-08-11
 
 ### Changed
