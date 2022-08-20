@@ -1,5 +1,11 @@
 # Changelog
 
+## 2022-08-20
+
+### Changed
+- Add build spec while creating app.
+- Pass data dict copy to pusher trigger function.
+
 ## 2022-08-14
 
 ### Changed

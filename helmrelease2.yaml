@@ -15,3 +15,6 @@ spec:
         name: shapeblock
         namespace: flux
       interval: 1m
+  install:
+    disableWait: false
+    disableWaitForJobs: false

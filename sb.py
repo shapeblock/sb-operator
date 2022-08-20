@@ -195,6 +195,10 @@ def create_app(spec, name, labels, namespace, logger, **kwargs):
             tmpl = open(path, 'rt').read()
             text = tmpl.format(name=name, tag=tag, service_account=service_account, repo=repo, ref=ref, builder_name=builder, app_uuid=app_uuid)
             data = yaml.safe_load(text)
+            chart_info = spec.get('chart')
+            build_envs = chart_info.get('build')
+            if build_envs:
+                data['spec']['build'] = {'env' : build_envs}
             response = api.create_namespaced_custom_object(
                 group="kpack.io",
                 version="v1alpha2",
@@ -236,7 +240,7 @@ def update_build(spec, status, name, namespace, logger, labels, **kwargs):
     if steps_completed:
         data['logs'] = core_v1.read_namespaced_pod_log(namespace=namespace, name=status['podName'], container=steps_completed[-1])
         if len(data['logs']) > 9000:
-            trigger_chunked(pusher_client, str(app_uuid), 'chunked-deployment', data)
+            trigger_chunked(pusher_client, str(app_uuid), 'chunked-deployment', dict(data))
         else:
             if len(data['logs']):
                 pusher_client.trigger(str(app_uuid), 'deployment', data)
@@ -464,6 +468,8 @@ def send_cluster_admin_account(logger):
         logger.info("POSTed token info.")
     nodes = get_nodes_info()
     response = requests.post(f"{sb_url}/clusters/{cluster_id}/nodes", json=nodes)
+    logger.info("POSTing node info")
+    logger.info(response.status_code)
     if response.status_code == 201:
         logger.info("POSTed node info.")
     else:
@@ -684,7 +690,7 @@ def remove_node(status, name, logger, **kwargs):
     node_data.append(node_info)
     response = requests.post(f"{sb_url}/clusters/{cluster_id}/nodes-delete", json=node_data)
     if response.status_code == 201:
-        logger.info("DELETEd node info for node {name}.")
+        logger.info(f"DELETEd node info for node {name}.")
 
 def get_nodes_info():
     node_data = []
