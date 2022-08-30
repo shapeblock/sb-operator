@@ -1,5 +1,8 @@
 # Changelog
 
+## 2022-08-30
+- Update the clusterstack run image sha every 12 hours.
+
 ## 2022-08-20
 
 ### Changed

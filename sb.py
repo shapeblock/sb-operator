@@ -704,3 +704,46 @@ def get_nodes_info():
         }
         node_data.append(node_info)
     return node_data
+
+# Update the stack run image every 12 hours
+# TODO: update the build image as well
+@kopf.timer('kpack.io', 'v1alpha2', 'clusterstack', interval=(3600.0 * 12))
+def update_run_image_sha(name, spec, status, logger, **kwargs):
+    logger.info(status['runImage']['latestImage'])
+    # get spec run image, if having not having sha, update.
+    run_image = spec['runImage']['image']
+    api = client.CustomObjectsApi()
+    response = requests.get('https://registry.hub.docker.com/v2/namespaces/paketobuildpacks/repositories/run/tags?page_size=1')
+    if response.status_code != 200:
+        logger.error('Unable to fetch run image info from registry.')
+        return
+    data = response.json()['results']
+    new_run_image_sha = data[0]['digest']
+    if run_image == 'paketobuildpacks/run:full-cnb':
+        logger.info('Updating run image')
+        update_run_image(api, logger, f'paketobuildpacks/run@{new_run_image_sha}')
+    else:
+        # if having sha, get status latest image
+        # fetch latest image, if it is different, then update spec image.
+        existing_run_image_sha = run_image.split('@')[1]
+        if existing_run_image_sha != new_run_image_sha:
+            logger.info(f'found updated image {new_run_image_sha} over existing image {existing_run_image_sha}.')
+            update_run_image(api, logger, f'paketobuildpacks/run@{new_run_image_sha}')
+
+def update_run_image(api, logger, run_image_sha):
+    patch_body = {
+        'spec': {
+            'runImage': {
+                'image': run_image_sha,
+            },
+        },
+    }
+    logger.debug(patch_body)
+    response = api.patch_cluster_custom_object(
+        group="kpack.io",
+        version="v1alpha2",
+        name='base',
+        plural="clusterstacks",
+        body=patch_body,
+    )
+    logger.info("Clusterstack patched.")
