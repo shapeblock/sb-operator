@@ -19,3 +19,4 @@ spec:
     - id: shapeblock-buildpacks/composer
     - id: shapeblock-buildpacks/php-fpm
     - id: shapeblock-buildpacks/nginx
+    - id: fagiani/apt

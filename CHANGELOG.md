@@ -1,5 +1,10 @@
 # Changelog
 
+## 2022-09-28
+- Remove clusterstack update.
+- Add apt BP for Drupal.
+- Add verify=False for all API calls.
+
 ## 2022-08-30
 - Update the clusterstack run image sha every 12 hours.
 
