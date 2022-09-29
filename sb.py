@@ -61,7 +61,7 @@ def create_project(spec, name, labels, logger, **kwargs):
     for secret in resp.secrets:
         if f'{name}-token' in secret.name:
             secret_response = core_v1.read_namespaced_secret(namespace=name, name=secret.name)
-            response = requests.post(f"{sb_url}/projects/{project_uuid}/token/", json=secret_response.data, verify=False)
+            response = requests.post(f"{sb_url}/projects/{project_uuid}/token/", json=secret_response.data)
             logger.info(f"Sent service account token for project {name}.")
 
 
@@ -177,7 +177,7 @@ def create_app(spec, name, labels, namespace, logger, **kwargs):
             if deployment_uuid:
                 data['deployment_uuid'] = deployment_uuid
             pusher_client.trigger(str(app_uuid), 'deployment', data)
-            response = requests.post(f"{sb_url}/deployments/", json=data, verify=False)
+            response = requests.post(f"{sb_url}/deployments/", json=data)
             #response = requests.post(f"{sb_url}/helm-status/", json=data)
 
     # create image
@@ -222,7 +222,7 @@ def create_app(spec, name, labels, namespace, logger, **kwargs):
             'deployment_uuid': deployment_uuid,
             }
             pusher_client.trigger(str(app_uuid), 'deployment', data)
-            response = requests.post(f"{sb_url}/deployments/", json=data, verify=False)
+            response = requests.post(f"{sb_url}/deployments/", json=data)
     return {'lastDeployment': deployment_uuid}
 
 @kopf.on.update('kpack.io', 'v1alpha2', 'builds')
@@ -251,7 +251,7 @@ def update_build(spec, status, name, namespace, logger, labels, **kwargs):
         else:
             if len(data['logs']):
                 pusher_client.trigger(str(app_uuid), 'deployment', data)
-        response = requests.post(f"{sb_url}/deployments/", json=data, verify=False)
+        response = requests.post(f"{sb_url}/deployments/", json=data)
 
 @kopf.on.field('kpack.io', 'v1alpha2', 'builds', field='status.conditions')
 def trigger_helm_release(name, namespace, labels, spec, status, new, logger, **kwargs):
@@ -278,7 +278,7 @@ def trigger_helm_release(name, namespace, labels, spec, status, new, logger, **k
             'deployment_uuid': deployment_uuid,
         }
         pusher_client.trigger(str(app_uuid), 'deployment', data)
-        response = requests.post(f"{sb_url}/deployments/", json=data, verify=False)
+        response = requests.post(f"{sb_url}/deployments/", json=data)
         create_helmrelease(app_name, app_uuid, namespace, tag, logger)
         # Update the latest image tag in app status
         update_app_status(namespace, app_name, tag, logger)
@@ -290,7 +290,7 @@ def trigger_helm_release(name, namespace, labels, spec, status, new, logger, **k
             'deployment_uuid': deployment_uuid,
         }
         pusher_client.trigger(str(app_uuid), 'deployment', data)
-        response = requests.post(f"{sb_url}/deployments/", json=data, verify=False)
+        response = requests.post(f"{sb_url}/deployments/", json=data)
 
 def get_last_tag(status: Dict):
     """
@@ -359,7 +359,7 @@ def update_app(spec, name, namespace, logger, labels, status, **kwargs):
         'deployment_uuid': deployment_uuid,
     }
     pusher_client.trigger(str(app_uuid), 'deployment', data)
-    response = requests.post(f"{sb_url}/deployments/", json=data, verify=False)
+    response = requests.post(f"{sb_url}/deployments/", json=data)
     return {'lastDeployment': deployment_uuid}
 
 
@@ -383,7 +383,7 @@ def notify_helm_release(old, new, labels, diff, namespace, name, logger, **kwarg
     }
     pusher_client.trigger(str(app_uuid), 'deployment', data)
     logger.info(f"Updated Helm release status for {name} successfully.")
-    response = requests.post(f"{sb_url}/deployments/", json=data, verify=False)
+    response = requests.post(f"{sb_url}/deployments/", json=data)
 
 
 @kopf.on.delete('applications')
@@ -470,11 +470,11 @@ def send_cluster_admin_account(logger):
         'ca.crt': open('/var/run/secrets/kubernetes.io/serviceaccount/ca.crt').read(),
     }
     logger.info('POSTing token info.')
-    response = requests.post(f"{sb_url}/clusters/{cluster_id}/token-info", json=data, verify=False)
+    response = requests.post(f"{sb_url}/clusters/{cluster_id}/token-info", json=data)
     if response.status_code == 202:
         logger.info("POSTed token info.")
     nodes = get_nodes_info()
-    response = requests.post(f"{sb_url}/clusters/{cluster_id}/nodes", json=nodes, verify=False)
+    response = requests.post(f"{sb_url}/clusters/{cluster_id}/nodes", json=nodes)
     logger.info("POSTing node info")
     logger.info(response.status_code)
     if response.status_code == 201:
@@ -485,7 +485,7 @@ def send_cluster_admin_account(logger):
 @kopf.on.cleanup()
 async def cleanup_fn(logger, **kwargs):
     nodes = get_nodes_info()
-    response = requests.post(f"{sb_url}/clusters/{cluster_id}/nodes-delete", json=nodes, verify=False)
+    response = requests.post(f"{sb_url}/clusters/{cluster_id}/nodes-delete", json=nodes)
     if response.status_code == 201:
         logger.info("DELETE node info.")
 
@@ -555,7 +555,7 @@ def create_helmrelease(name, app_uuid, namespace, tag, logger):
             'deployment_uuid': deployment_uuid,
         }
         pusher_client.trigger(str(app_uuid), 'deployment', data)
-        response = requests.post(f"{sb_url}/deployments/", json=data, verify=False)
+        response = requests.post(f"{sb_url}/deployments/", json=data)
     except ApiException as error:
         if error.status == 404:
             chart_info = spec.get('chart')
@@ -593,7 +593,7 @@ def create_helmrelease(name, app_uuid, namespace, tag, logger):
             'deployment_uuid': deployment_uuid,
             }
             pusher_client.trigger(str(app_uuid), 'deployment', data)
-            response = requests.post(f"{sb_url}/deployments/", json=data, verify=False)
+            response = requests.post(f"{sb_url}/deployments/", json=data)
             #response = requests.post(f"{sb_url}/helm-status/", json=data)
 
 
@@ -683,7 +683,7 @@ def add_node(status, name, logger, **kwargs):
         'memory': status['capacity']['memory'],
     }
     node_data.append(node_info)
-    response = requests.post(f"{sb_url}/clusters/{cluster_id}/nodes", json=node_data, verify=False)
+    response = requests.post(f"{sb_url}/clusters/{cluster_id}/nodes", json=node_data)
     if response.status_code == 201:
         logger.info(f"POSTed node info for node {name}.")
 
@@ -695,7 +695,7 @@ def remove_node(status, name, logger, **kwargs):
         'memory': status['capacity']['memory'],
     }
     node_data.append(node_info)
-    response = requests.post(f"{sb_url}/clusters/{cluster_id}/nodes-delete", json=node_data, verify=False)
+    response = requests.post(f"{sb_url}/clusters/{cluster_id}/nodes-delete", json=node_data)
     if response.status_code == 201:
         logger.info(f"DELETEd node info for node {name}.")
 

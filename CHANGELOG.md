@@ -1,5 +1,8 @@
 # Changelog
 
+## 2022-09-29
+- Remove verify=False for all API calls.
+
 ## 2022-09-28
 - Remove clusterstack update.
 - Add apt BP for Drupal.
