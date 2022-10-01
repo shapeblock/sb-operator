@@ -1,5 +1,8 @@
 # Changelog
 
+## 2022-10-01
+- Delete any job when cleaning up application.
+
 ## 2022-09-29
 - Remove verify=False for all API calls.
 

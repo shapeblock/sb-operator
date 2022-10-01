@@ -387,8 +387,9 @@ def notify_helm_release(old, new, labels, diff, namespace, name, logger, **kwarg
 
 
 @kopf.on.delete('applications')
-def delete_app(spec, name, namespace, logger, **kwargs):
+def delete_app(spec, name, namespace, labels, logger, **kwargs):
     logger.debug(f"An application is deleted with spec: {spec}")
+    app_uuid = labels.get('shapeblock.com/app-uuid')
     api = client.CustomObjectsApi()
     try:
         response = api.delete_namespaced_custom_object(
@@ -430,6 +431,13 @@ def delete_app(spec, name, namespace, logger, **kwargs):
     except:
         logger.info('Unable to delete helm release.')
     # Delete any job
+    job_label = f"appUuid={app_uuid}"
+    batch_v1 = client.BatchV1Api()
+    jobs = batch_v1.list_namespaced_job(namespace=namespace, label_selector=job_label)
+    for job in job.items:
+        resp = batch_v1.delete_namespaced_job(namespace=namespace, body=client.V1DeleteOptions(), name=job.metadata.name)
+        logger.info(f'Deleting Job {job.metadata.name}')
+    logger.info("jobs deleted.")
     # Delete ingress tls secret
     # Delete volumes if any
     core_v1 = client.CoreV1Api()
