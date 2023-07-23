@@ -433,15 +433,18 @@ def delete_app(spec, name, namespace, labels, logger, **kwargs):
     # Delete any job
     job_label = f"appUuid={app_uuid}"
     batch_v1 = client.BatchV1Api()
+    core_v1 = client.CoreV1Api()
     jobs = batch_v1.list_namespaced_job(namespace=namespace, label_selector=job_label)
-    for job in job.items:
+    for job in jobs.items:
         resp = batch_v1.delete_namespaced_job(namespace=namespace, body=client.V1DeleteOptions(), name=job.metadata.name)
+        pod_label = f"job-name={job.metadata.name}"
+        resp = core_v1.delete_namespaced_pod(namespace=namespace, body=client.V1DeleteOptions(), label_selector=pod_label)
         logger.info(f'Deleting Job {job.metadata.name}')
     logger.info("jobs deleted.")
     # Delete ingress tls secret
     # Delete volumes if any
     core_v1 = client.CoreV1Api()
-    label = f"app.kubernetes.io/instance={namespace}-{name}"
+    label = f"app.kubernetes.io/instance={name}"
     pvcs = core_v1.list_namespaced_persistent_volume_claim(namespace=namespace, label_selector=label)
     for pvc in pvcs.items:
         resp = core_v1.delete_namespaced_persistent_volume_claim(namespace=namespace, body=client.V1DeleteOptions(), name=pvc.metadata.name)
