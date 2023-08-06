@@ -480,10 +480,6 @@ def send_cluster_admin_account(logger):
         'token': open('/var/run/secrets/kubernetes.io/serviceaccount/token').read(),
         'ca.crt': open('/var/run/secrets/kubernetes.io/serviceaccount/ca.crt').read(),
     }
-    logger.info('POSTing token info.')
-    response = requests.post(f"{sb_url}/clusters/{cluster_id}/token-info", json=data)
-    if response.status_code == 202:
-        logger.info("POSTed token info.")
     nodes = get_nodes_info()
     response = requests.post(f"{sb_url}/clusters/{cluster_id}/nodes", json=nodes)
     logger.info("POSTing node info")
@@ -492,6 +488,11 @@ def send_cluster_admin_account(logger):
         logger.info("POSTed node info.")
     else:
         logger.error('Unable to send node information.')
+    logger.info('POSTing token info.')
+    response = requests.post(f"{sb_url}/clusters/{cluster_id}/token-info", json=data)
+    if response.status_code == 202:
+        logger.info("POSTed token info.")
+
 
 @kopf.on.cleanup()
 async def cleanup_fn(logger, **kwargs):
