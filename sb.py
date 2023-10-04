@@ -17,6 +17,20 @@ pusher_client = pusher.Pusher(
   ssl=True
 )
 
+"""
+TODO:
+Failure scenarios
+-----------------
+1. builder creation fails
+2. image creation fails
+3. builder update fails
+4. image update fails
+5. image push fails
+6. build fails
+7. helm deploy fails
+8. helm create fails
+"""
+
 def trigger_chunked(pusher_client, app_uuid, event, data):
     chunk_size = 9000
     i = 0
@@ -154,20 +168,34 @@ def create_app(spec, name, labels, namespace, logger, **kwargs):
         logger.info("Builder exists.")
     except ApiException as error:
         if error.status == 404:
-            tag = spec.get('tag')
-            chart_info = spec.get('chart')
-            stack = chart_info.get('name')
-            path = os.path.join(os.path.dirname(__file__), f'builder-{stack}.yaml')
-            tmpl = open(path, 'rt').read()
-            text = tmpl.format(name=name, tag=tag, service_account=name, app_uuid=app_uuid)
-            data = yaml.safe_load(text)
-            response = api.create_namespaced_custom_object(
-                group="kpack.io",
-                version="v1alpha2",
-                namespace=namespace,
-                plural="builders",
-                body=data,
-            )
+            try:
+                tag = spec.get('tag')
+                chart_info = spec.get('chart')
+                stack = chart_info.get('name')
+                path = os.path.join(os.path.dirname(__file__), f'builder-{stack}.yaml')
+                tmpl = open(path, 'rt').read()
+                text = tmpl.format(name=name, tag=tag, service_account=name, app_uuid=app_uuid)
+                data = yaml.safe_load(text)
+                response = api.create_namespaced_custom_object(
+                    group="kpack.io",
+                    version="v1alpha2",
+                    namespace=namespace,
+                    plural="builders",
+                    body=data,
+                )
+            except:
+                logger.error("Unable to create builder.")
+                data = {
+                    'logs': 'Unable to create builder.\n',
+                    'status': 'failed',
+                    'app_uuid': app_uuid,
+                }
+                if deployment_uuid:
+                    data['deployment_uuid'] = deployment_uuid
+                pusher_client.trigger(str(app_uuid), 'deployment', data)
+                response = requests.post(f"{sb_url}/deployments/", json=data)
+                return
+                
             logger.info("Builder created.")
             data = {
             'logs': 'Builder created.\n',
@@ -192,6 +220,7 @@ def create_app(spec, name, labels, namespace, logger, **kwargs):
         logger.info("Image exists.")
     except ApiException as error:
         if error.status == 404:
+            #TODO: handle exception here
             tag = spec.get('tag')
             git_info = spec.get('git')
             repo = git_info.get('repo')

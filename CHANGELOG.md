@@ -1,5 +1,8 @@
 # Changelog
 
+## 2023-10-02
+- handle exception while creating builder.
+
 ## 2022-10-01
 - Delete any job when cleaning up application.
 
