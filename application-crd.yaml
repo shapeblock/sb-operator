@@ -8,6 +8,9 @@ spec:
   names:
     kind: Application
     listKind: ApplicationList
+    shortNames:
+    - app
+    - apps
     plural: applications
     singular: application
   scope: Namespaced
@@ -32,13 +35,9 @@ spec:
           spec:
             description: ApplicationSpec defines the desired state of Application
             properties:
-              buildConfig:
-                properties:
-                  clusterStack:
-                    type: string
-                  clusterStore:
-                    type: string
-                type: object
+              stack:
+                type: string
+                enum: [php, java, python, node, go, ruby]
               chart:
                 properties:
                   name:

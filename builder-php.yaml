@@ -11,12 +11,18 @@ spec:
     name: base
     kind: ClusterStack
   store:
-    name: paketo-php
+    name: sb-drupal
     kind: ClusterStore
   order:
   - group:
     - id: paketo-buildpacks/ca-certificates
-    - id: paketo-buildpacks/nginx
     - id: paketo-buildpacks/php-dist
-    - id: paketo-buildpacks/php-composer
-    - id: paketo-buildpacks/php-web
+    - id: paketo-buildpacks/composer
+    - id: paketo-buildpacks/composer-install
+    - id: paketo-buildpacks/nginx
+    - id: paketo-buildpacks/php-fpm
+    - id: paketo-buildpacks/php-nginx
+    - id: paketo-buildpacks/php-start
+    #- id: paketo-buildpacks/nodejs
+    #- id: paketo-buildpacks/procfile      
+    - id: fagiani/apt

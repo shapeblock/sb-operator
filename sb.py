@@ -170,8 +170,7 @@ def create_app(spec, name, labels, namespace, logger, **kwargs):
         if error.status == 404:
             try:
                 tag = spec.get('tag')
-                chart_info = spec.get('chart')
-                stack = chart_info.get('name')
+                stack = spec.get('stack')
                 path = os.path.join(os.path.dirname(__file__), f'builder-{stack}.yaml')
                 tmpl = open(path, 'rt').read()
                 text = tmpl.format(name=name, tag=tag, service_account=name, app_uuid=app_uuid)
@@ -183,7 +182,8 @@ def create_app(spec, name, labels, namespace, logger, **kwargs):
                     plural="builders",
                     body=data,
                 )
-            except:
+            except Exception as e:
+                logger.error(e)
                 logger.error("Unable to create builder.")
                 data = {
                     'logs': 'Unable to create builder.\n',
@@ -334,9 +334,9 @@ def update_app(spec, name, namespace, logger, labels, status, **kwargs):
     if not app_uuid:
         return
     response = requests.get(f"{sb_url}/apps/{app_uuid}/last-deployment/")
+    deployment_uuid = response.json()['deployment']
+    deployment_type = response.json()['type']
     if response.status_code == 200:
-        deployment_uuid = response.json()['deployment']
-        deployment_type = response.json()['type']
         # if app scale, then skip building and trigger a helm release directly.
         if deployment_type == 'scale':
             tag = get_last_tag(status)
@@ -549,6 +549,7 @@ def create_helmrelease(name, app_uuid, namespace, tag, logger):
             logger.error(f"??? Application {name} not found in namespace {namespace}.")
             return
     spec = app.get('spec')
+    repo, image_tag = tag.split(':')    
     logger.debug(f"App spec: {spec}.")
     app_status = get_app_status(namespace, name, logger)
     if 'update_app' in app_status.keys():
@@ -566,7 +567,7 @@ def create_helmrelease(name, app_uuid, namespace, tag, logger):
         logger.info("Helm Release exists, patching ...")
         chart_info = spec.get('chart')
         chart_values = chart_info.get('values')
-        data = {
+        helm_data = {
             "spec": {
                 "chart": {
                     # Add chart version from spec
@@ -575,18 +576,14 @@ def create_helmrelease(name, app_uuid, namespace, tag, logger):
                 "values": yaml.safe_load(chart_values),
             }
         }
-        stack = chart_info.get('name')
-        if stack in ['drupal', 'php']:
-            data['spec']['values']['php']['image'] = tag
-        if stack in ['nodejs', 'django']:
-            data['spec']['values']['image']['repository'] = tag
+        helm_data['spec']['values']['universal-chart']['defaultImageTag'] = image_tag
         response = api.patch_namespaced_custom_object(
             group="helm.toolkit.fluxcd.io",
             version="v2beta1",
             namespace=namespace,
             name=name,
             plural="helmreleases",
-            body=data,
+            body=helm_data,
         )
         logger.info("Helmrelease patched.")
         data = {
@@ -612,19 +609,15 @@ def create_helmrelease(name, app_uuid, namespace, tag, logger):
                             chart_version=chart_version,
                             app_uuid=app_uuid,
                             )
-            data = yaml.safe_load(text)
-            data['spec']['values'] = yaml.safe_load(chart_values)
-            stack = chart_name
-            if stack in ['drupal', 'php']:
-                data['spec']['values']['php']['image'] = tag
-            if stack == 'nodejs':
-                data['spec']['values']['image']['repository'] = tag
+            helm_data = yaml.safe_load(text)
+            helm_data['spec']['values'] = yaml.safe_load(chart_values)
+            helm_data['spec']['values']['universal-chart']['defaultImageTag'] = image_tag
             response = api.create_namespaced_custom_object(
                 group="helm.toolkit.fluxcd.io",
                 version="v2beta1",
                 namespace=namespace,
                 plural="helmreleases",
-                body=data,
+                body=helm_data,
             )
             logger.info("Helmrelease created.")
             data = {
@@ -752,48 +745,3 @@ def get_nodes_info():
         }
         node_data.append(node_info)
     return node_data
-
-# Update the stack run image every 12 hours
-# TODO: update the build image as well
-"""
-@kopf.timer('kpack.io', 'v1alpha2', 'clusterstack', interval=(3600.0 * 12))
-def update_run_image_sha(name, spec, status, logger, **kwargs):
-    logger.info(status['runImage'].get('latestImage'))
-    # get spec run image, if having not having sha, update.
-    run_image = spec['runImage']['image']
-    api = client.CustomObjectsApi()
-    response = requests.get('https://registry.hub.docker.com/v2/namespaces/paketobuildpacks/repositories/run/tags?page_size=1')
-    if response.status_code != 200:
-        logger.error('Unable to fetch run image info from registry.')
-        return
-    data = response.json()['results']
-    new_run_image_sha = data[0]['digest']
-    if run_image == 'paketobuildpacks/run:full-cnb':
-        logger.info('Updating run image')
-        update_run_image(api, logger, f'paketobuildpacks/run@{new_run_image_sha}')
-    else:
-        # if having sha, get status latest image
-        # fetch latest image, if it is different, then update spec image.
-        existing_run_image_sha = run_image.split('@')[1]
-        if existing_run_image_sha != new_run_image_sha:
-            logger.info(f'found updated image {new_run_image_sha} over existing image {existing_run_image_sha}.')
-            update_run_image(api, logger, f'paketobuildpacks/run@{new_run_image_sha}')
-
-def update_run_image(api, logger, run_image_sha):
-    patch_body = {
-        'spec': {
-            'runImage': {
-                'image': run_image_sha,
-            },
-        },
-    }
-    logger.debug(patch_body)
-    response = api.patch_cluster_custom_object(
-        group="kpack.io",
-        version="v1alpha2",
-        name='base',
-        plural="clusterstacks",
-        body=patch_body,
-    )
-    logger.info("Clusterstack patched.")
-"""
