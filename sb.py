@@ -17,6 +17,7 @@ pusher_client = pusher.Pusher(
   ssl=True
 )
 
+CHUNK_SIZE = 5000
 """
 TODO:
 Failure scenarios
@@ -32,7 +33,7 @@ Failure scenarios
 """
 
 def trigger_chunked(pusher_client, app_uuid, event, data):
-    chunk_size = 9000
+    chunk_size = CHUNK_SIZE
     i = 0
     logs = data.pop('logs')
 
@@ -275,7 +276,7 @@ def update_build(spec, status, name, namespace, logger, labels, **kwargs):
     steps_completed = status.get('stepsCompleted')
     if steps_completed:
         data['logs'] = core_v1.read_namespaced_pod_log(namespace=namespace, name=status['podName'], container=steps_completed[-1])
-        if len(data['logs']) > 9000:
+        if len(data['logs']) > CHUNK_SIZE:
             trigger_chunked(pusher_client, str(app_uuid), 'chunked-deployment', dict(data))
         else:
             if len(data['logs']):
