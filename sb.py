@@ -129,11 +129,13 @@ def create_service_account(name, namespace, logger):
 def create_app(spec, name, labels, namespace, logger, **kwargs):
     app_uuid = labels.get('shapeblock.com/app-uuid')
     if not app_uuid:
+        logger.error(f"An application {name} is created in {namespace} without the 'shapeblock.com/app-uuid' label.")
         return
     logger.debug(f"An application is created with spec: {spec}")
     api = client.CustomObjectsApi()
     # create service account
     #TODO: handle exception if already created
+    # why create a service account? A: if we're dealing with private repos.
     try:
         service_account = create_service_account(name, namespace, logger)
     except:
@@ -152,11 +154,7 @@ def create_app(spec, name, labels, namespace, logger, **kwargs):
         except:
             logger.error(f'??? Unable to update service account for app {name} in project {namespace}.')
             return
-    response = requests.get(f"{sb_url}/apps/{app_uuid}/last-deployment/")
-    if response.status_code == 200:
-        deployment_uuid = response.json()['deployment']
-    else:
-        deployment_uuid = None
+    deployment_uuid = labels.get('shapeblock.com/deployment-uuid')
     # Create builder
     try:
         resource = api.get_namespaced_custom_object(
@@ -196,7 +194,7 @@ def create_app(spec, name, labels, namespace, logger, **kwargs):
                 pusher_client.trigger(str(app_uuid), 'deployment', data)
                 response = requests.post(f"{sb_url}/deployments/", json=data)
                 return
-                
+
             logger.info("Builder created.")
             data = {
             'logs': 'Builder created.\n',
@@ -309,7 +307,7 @@ def trigger_helm_release(name, namespace, labels, spec, status, new, logger, **k
         }
         pusher_client.trigger(str(app_uuid), 'deployment', data)
         response = requests.post(f"{sb_url}/deployments/", json=data)
-        create_helmrelease(app_name, app_uuid, namespace, tag, logger)
+        create_helmrelease(name=app_name, app_uuid=app_uuid, app_spec=None, namespace=namespace, tag=tag, logger=logger)
         # Update the latest image tag in app status
         update_app_status(namespace, app_name, tag, logger)
     if status.get('type') == 'Succeeded' and status.get('status') == 'False':
@@ -334,24 +332,21 @@ def update_app(spec, name, namespace, logger, labels, status, **kwargs):
     app_uuid = labels.get('shapeblock.com/app-uuid')
     if not app_uuid:
         return
-    response = requests.get(f"{sb_url}/apps/{app_uuid}/last-deployment/")
-    deployment_uuid = response.json()['deployment']
-    deployment_type = response.json()['type']
-    if response.status_code == 200:
-        # if app scale, then skip building and trigger a helm release directly.
-        if deployment_type == 'scale':
-            tag = get_last_tag(status)
-            # update app status with last deployment
-            update_app_deployment_status(namespace, name, deployment_uuid, logger)
-            create_helmrelease(name, app_uuid, namespace, tag, logger)
-            return
+    deployment_uuid = labels.get('shapeblock.com/deployment-uuid')
+    deployment_type = labels.get('shapeblock.com/deployment-type')
+    if deployment_type == 'config':
+        tag = get_last_tag(status)
+        # update app status with last deployment
+        update_app_deployment_status(namespace, name, deployment_uuid, logger)
+        create_helmrelease(name, app_uuid, spec, namespace, tag, logger)
+        return
     api = client.CustomObjectsApi()
     git_info = spec.get('git')
     ref = git_info.get('ref')
     chart_info = spec.get('chart')
     build_envs = chart_info.get('build')
     # TODO: Create image and build if it doesn't exist already
-    # If config change, add a build env var. It is harmless and triggers a new build.
+    # If build config change, add a build env var. It is harmless and triggers a new build.
     patch_body = {
         "spec": {
             "source": {
@@ -393,27 +388,30 @@ def update_app(spec, name, namespace, logger, labels, status, **kwargs):
     return {'lastDeployment': deployment_uuid}
 
 
-@kopf.on.field('helm.toolkit.fluxcd.io', 'v2beta1', 'helmreleases', field='status.observedGeneration')
-def notify_helm_release(old, new, labels, diff, namespace, name, logger, **kwargs):
-    app_uuid = labels.get('shapeblock.com/app-uuid')
-    if not app_uuid:
-        return
-    logger.info('POSTing helm release status.')
-    app_status = get_app_status(namespace, name, logger)
-    if 'update_app' in app_status.keys():
-        deployment_uuid = app_status['update_app'].get('lastDeployment')
-    else:
-        deployment_uuid = app_status['create_app'].get('lastDeployment')
-    #TODO: check if helm status is successful.
-    data = {
-        'logs': 'Notify helm release.\n',
-        'status': 'success',
-        'app_uuid': app_uuid,
-        'deployment_uuid': deployment_uuid,
-    }
-    pusher_client.trigger(str(app_uuid), 'deployment', data)
-    logger.info(f"Updated Helm release status for {name} successfully.")
-    response = requests.post(f"{sb_url}/deployments/", json=data)
+@kopf.on.update('helm.toolkit.fluxcd.io', 'v2beta1', 'helmreleases', field='status')
+def helm_release_status(name, namespace, labels, status, logger, **kwargs):
+    logger.info('--- helm release status ---')
+    logger.info(status)
+    history = status.get('history')
+    conditions = status.get('conditions')
+    if history and conditions:
+        if history[0]['status'] == 'deployed':
+            status = 'success'
+        if history[0]['status'] == 'failed':
+            status = 'failed'
+        if status:
+            deployment_uuid = labels.get('shapeblock.com/deployment-uuid')
+            app_uuid = labels.get('shapeblock.com/app-uuid')
+            data = {
+                'logs': conditions[-1]['message'],
+                'status': status,
+                'app_uuid': app_uuid,
+                'deployment_uuid': deployment_uuid,
+            }
+            pusher_client.trigger(str(app_uuid), 'deployment', data)
+            response = requests.post(f"{sb_url}/deployments/", json=data)
+
+
 
 
 @kopf.on.delete('applications')
@@ -502,40 +500,10 @@ def delete_project(spec, name, logger, **kwargs):
 @kopf.on.startup()
 def startup_fn(logger, **kwargs):
     logger.info("check if helm release, ingress, cert, registry, kpack, nfs are installed.")
-    logger.info("send notification to SB.")
-    send_cluster_admin_account(logger)
-
-def send_cluster_admin_account(logger):
-    data ={
-        'token': open('/var/run/secrets/kubernetes.io/serviceaccount/token').read(),
-        'ca.crt': open('/var/run/secrets/kubernetes.io/serviceaccount/ca.crt').read(),
-    }
-    nodes = get_nodes_info()
-    response = requests.post(f"{sb_url}/clusters/{cluster_id}/nodes", json=nodes)
-    logger.info("POSTing node info")
-    logger.info(response.status_code)
-    if response.status_code == 201:
-        logger.info("POSTed node info.")
-    else:
-        logger.error('Unable to send node information.')
-    logger.info('POSTing token info.')
-    response = requests.post(f"{sb_url}/clusters/{cluster_id}/token-info", json=data)
-    if response.status_code == 202:
-        logger.info("POSTed token info.")
+    logger.info("send notification to SB server.")
 
 
-@kopf.on.cleanup()
-async def cleanup_fn(logger, **kwargs):
-    nodes = get_nodes_info()
-    response = requests.post(f"{sb_url}/clusters/{cluster_id}/nodes-delete", json=nodes)
-    if response.status_code == 201:
-        logger.info("DELETE node info.")
-
-# TODO: daemon to update kpack base images
-# TODO: daemon to send status to SB every x hrs
-
-def create_helmrelease(name, app_uuid, namespace, tag, logger):
-    # TODO: add label
+def get_app_object(name, namespace, logger):
     api = client.CustomObjectsApi()
     try:
         app = api.get_namespaced_custom_object(
@@ -549,8 +517,20 @@ def create_helmrelease(name, app_uuid, namespace, tag, logger):
         if error.status == 404:
             logger.error(f"??? Application {name} not found in namespace {namespace}.")
             return
-    spec = app.get('spec')
-    repo, image_tag = tag.split(':')    
+    return app
+
+# TODO: daemon to update kpack base images
+# TODO: daemon to send status to SB every x hrs
+
+def create_helmrelease(name, app_uuid, app_spec, namespace, tag, logger):
+    # TODO: add label
+    api = client.CustomObjectsApi()
+    if app_spec:
+        spec = app_spec
+    else:
+        app = get_app_object(name, namespace, logger)
+        spec = app.get('spec')
+    _, image_tag = tag.split(':')
     logger.debug(f"App spec: {spec}.")
     app_status = get_app_status(namespace, name, logger)
     if 'update_app' in app_status.keys():
@@ -569,6 +549,11 @@ def create_helmrelease(name, app_uuid, namespace, tag, logger):
         chart_info = spec.get('chart')
         chart_values = chart_info.get('values')
         helm_data = {
+            "metdata": {
+                "labels": {
+                    "shapeblock.com/deployment-uuid": deployment_uuid,
+                }
+            },
             "spec": {
                 "chart": {
                     # Add chart version from spec
@@ -609,6 +594,7 @@ def create_helmrelease(name, app_uuid, namespace, tag, logger):
                             chart_repo=chart_repo,
                             chart_version=chart_version,
                             app_uuid=app_uuid,
+                            deployment_uuid=deployment_uuid,
                             )
             helm_data = yaml.safe_load(text)
             helm_data['spec']['values'] = yaml.safe_load(chart_values)
@@ -709,40 +695,3 @@ def update_app_deployment_status(namespace, name, deployment, logger):
         logger.info(f"Application {name} patched with deployment ID {deployment}.")
     except ApiException as error:
         logger.error(f"??? Unable to update deployment status of application {name} in namespace {namespace}.")
-
-@kopf.on.create('nodes')
-def add_node(status, name, logger, **kwargs):
-    node_data = []
-    node_info = {
-        'name': name,
-        'memory': status['capacity']['memory'],
-    }
-    node_data.append(node_info)
-    response = requests.post(f"{sb_url}/clusters/{cluster_id}/nodes", json=node_data)
-    if response.status_code == 201:
-        logger.info(f"POSTed node info for node {name}.")
-
-@kopf.on.delete('nodes')
-def remove_node(status, name, logger, **kwargs):
-    node_data = []
-    node_info = {
-        'name': name,
-        'memory': status['capacity']['memory'],
-    }
-    node_data.append(node_info)
-    response = requests.post(f"{sb_url}/clusters/{cluster_id}/nodes-delete", json=node_data)
-    if response.status_code == 201:
-        logger.info(f"DELETEd node info for node {name}.")
-
-def get_nodes_info():
-    node_data = []
-    config.load_incluster_config()
-    core_v1 = client.CoreV1Api()
-    nodes = core_v1.list_node()
-    for node in nodes.items:
-        node_info = {
-            'name': node.metadata.name,
-            'memory': node.status.capacity['memory'],
-        }
-        node_data.append(node_info)
-    return node_data

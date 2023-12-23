@@ -4,6 +4,7 @@ metadata:
   name: "{name}"
   labels:
     shapeblock.com/app-uuid: "{app_uuid}"
+    shapeblock.com/deployment-uuid: "{deployment_uuid}"
 spec:
   interval: 5m
   chart:
