@@ -346,8 +346,8 @@ def update_app(spec, name, namespace, logger, labels, status, **kwargs):
     deployment_type = labels.get('shapeblock.com/deployment-type')
     if deployment_type == 'config':
         tag = get_last_tag(status)
-        # update app status with last deployment
-        update_app_deployment_status(namespace, name, deployment_uuid, logger)
+        # update app with last deployment id
+        update_app_deployment_id(namespace, name, deployment_uuid, logger)
         # Trigger a helm release if it's only a config change
         update_helmrelease(name, app_uuid, spec, namespace, tag, logger)
         return {'lastDeployment': deployment_uuid}
@@ -405,10 +405,15 @@ def helm_release_status(name, namespace, spec, diff, labels, status, logger, **k
     logger.info('--- helm release status ---')
     deployment_uuid = spec['values']['universal-chart']['generic']['labels']['deployUuid']
     logger.info(f'deployment UUID: {deployment_uuid}')
-    logger.info(diff)
-    logger.info(status)
+    app_status = get_app_status(namespace, name, logger)
+    if 'update_app' in app_status.keys():
+        app_deployment_uuid = app_status['update_app'].get('lastDeployment')
+    else:
+        app_deployment_uuid = app_status['create_app'].get('lastDeployment')
     history = status.get('history')
     conditions = status.get('conditions')
+    if (app_deployment_uuid == deployment_uuid) and (app_status.get('lastDeployedVersion') == history[0]['version']):
+        return
     if history and conditions:
         if history[0]['status'] == 'deployed':
             status = 'success'
@@ -422,6 +427,7 @@ def helm_release_status(name, namespace, spec, diff, labels, status, logger, **k
                 'app_uuid': app_uuid,
                 'deployment_uuid': deployment_uuid,
             }
+            update_app_deployment_status(namespace, name, history[0]['version'], logger)
             pusher_client.trigger(str(app_uuid), 'deployment', data)
             response = requests.post(f"{sb_url}/deployments/", json=data)
 
@@ -659,7 +665,7 @@ def update_app_status(namespace, name, tag, logger):
     except ApiException as error:
         logger.error(f"??? Unable to update status of application {name} in namespace {namespace}.")
 
-def update_app_deployment_status(namespace, name, deployment, logger):
+def update_app_deployment_id(namespace, name, deployment, logger):
     api = client.CustomObjectsApi()
     try:
         app = api.get_namespaced_custom_object(
@@ -690,5 +696,37 @@ def update_app_deployment_status(namespace, name, deployment, logger):
             body=patched_body,
         )
         logger.info(f"Application {name} patched with deployment ID {deployment}.")
+    except ApiException as error:
+        logger.error(f"??? Unable to update deployment ID of application {name} in namespace {namespace}.")
+
+def update_app_deployment_status(namespace, name, deployed_version, logger):
+    api = client.CustomObjectsApi()
+    try:
+        app = api.get_namespaced_custom_object(
+            group="dev.shapeblock.com",
+            version="v1alpha1",
+            name=name,
+            namespace=namespace,
+            plural="applications",
+        )
+    except ApiException as error:
+        if error.status == 404:
+            logger.error(f"??? Application {name} not found in namespace {namespace}.")
+            return
+    try:
+        patched_body = {
+            'status': {
+                'lastDeployedVersion' : deployed_version,
+            }
+        }
+        response = api.patch_namespaced_custom_object_status(
+            group="dev.shapeblock.com",
+            version="v1alpha1",
+            namespace=namespace,
+            name=name,
+            plural="applications",
+            body=patched_body,
+        )
+        logger.info(f"Application {name} patched with deployment status {deployed_version}.")
     except ApiException as error:
         logger.error(f"??? Unable to update deployment status of application {name} in namespace {namespace}.")
