@@ -403,6 +403,9 @@ def update_app(spec, name, namespace, logger, labels, status, **kwargs):
 @kopf.on.update('helm.toolkit.fluxcd.io', 'v2beta1', 'helmreleases', field='status')
 def helm_release_status(name, namespace, spec, diff, labels, status, logger, **kwargs):
     logger.info('--- helm release status ---')
+    service_uuid = labels.get('shapeblock.com/service-uuid')
+    if service_uuid:
+        return
     deployment_uuid = spec['values']['universal-chart']['generic']['labels']['deployUuid']
     logger.info(f'deployment UUID: {deployment_uuid}')
     app_status = get_app_status(namespace, name, logger)
@@ -515,6 +518,19 @@ def delete_project(spec, name, logger, **kwargs):
     delete_namespace(name)
     # any other cleanup
     # TODO: send notification
+
+@kopf.on.delete('helmreleases')
+def delete_helmrelease(name, namespace, labels, logger, **kwargs):
+    service_uuid = labels.get('shapeblock.com/service-uuid')
+    if not service_uuid:
+        return
+    core_v1 = client.CoreV1Api()
+    label = f"app.kubernetes.io/instance={name}"
+    pvcs = core_v1.list_namespaced_persistent_volume_claim(namespace=namespace, label_selector=label)
+    for pvc in pvcs.items:
+        resp = core_v1.delete_namespaced_persistent_volume_claim(namespace=namespace, body=client.V1DeleteOptions(), name=pvc.metadata.name)
+        logger.info(f'Deleting PVC {pvc.metadata.name}')
+    logger.info("volumes deleted.")
 
 
 @kopf.on.startup()
