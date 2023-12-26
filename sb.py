@@ -154,7 +154,8 @@ def create_app(spec, name, labels, namespace, logger, **kwargs):
         except:
             logger.error(f'??? Unable to update service account for app {name} in project {namespace}.')
             return
-    deployment_uuid = labels.get('shapeblock.com/deployment-uuid')
+    chart_values = yaml.safe_load(spec['chart']['values'])
+    deployment_uuid = chart_values['universal-chart']['generic']['labels']['deployUuid']
     # Create builder
     try:
         resource = api.get_namespaced_custom_object(
@@ -188,6 +189,7 @@ def create_app(spec, name, labels, namespace, logger, **kwargs):
                     'logs': 'Unable to create builder.\n',
                     'status': 'failed',
                     'app_uuid': app_uuid,
+                    'deployment_uuid': deployment_uuid,
                 }
                 if deployment_uuid:
                     data['deployment_uuid'] = deployment_uuid
@@ -200,6 +202,7 @@ def create_app(spec, name, labels, namespace, logger, **kwargs):
             'logs': 'Builder created.\n',
             'status': 'running',
             'app_uuid': app_uuid,
+            'deployment_uuid': deployment_uuid,
             }
             if deployment_uuid:
                 data['deployment_uuid'] = deployment_uuid
@@ -289,8 +292,10 @@ def trigger_helm_release(name, namespace, labels, spec, status, new, logger, **k
         return
     app_name = labels['image.kpack.io/image']
     app_status = get_app_status(namespace, app_name, logger)
+    is_new_app = True
     if 'update_app' in app_status.keys():
         deployment_uuid = app_status['update_app'].get('lastDeployment')
+        is_new_app = False
     else:
         deployment_uuid = app_status['create_app'].get('lastDeployment')
     status = new[0]
@@ -307,7 +312,11 @@ def trigger_helm_release(name, namespace, labels, spec, status, new, logger, **k
         }
         pusher_client.trigger(str(app_uuid), 'deployment', data)
         response = requests.post(f"{sb_url}/deployments/", json=data)
-        create_helmrelease(name=app_name, app_uuid=app_uuid, app_spec=None, namespace=namespace, tag=tag, logger=logger)
+        app_object = get_app_object(app_name, namespace, logger)
+        if is_new_app:
+            create_helmrelease(name=app_name, app_uuid=app_uuid, app_spec=app_object['spec'], namespace=namespace, tag=tag, logger=logger)
+        else:
+            update_helmrelease(name=app_name, app_uuid=app_uuid, app_spec=app_object['spec'], namespace=namespace, tag=tag, logger=logger)
         # Update the latest image tag in app status
         update_app_status(namespace, app_name, tag, logger)
     if status.get('type') == 'Succeeded' and status.get('status') == 'False':
@@ -332,14 +341,16 @@ def update_app(spec, name, namespace, logger, labels, status, **kwargs):
     app_uuid = labels.get('shapeblock.com/app-uuid')
     if not app_uuid:
         return
-    deployment_uuid = labels.get('shapeblock.com/deployment-uuid')
+    chart_values = yaml.safe_load(spec['chart']['values'])
+    deployment_uuid = chart_values['universal-chart']['generic']['labels']['deployUuid']
     deployment_type = labels.get('shapeblock.com/deployment-type')
     if deployment_type == 'config':
         tag = get_last_tag(status)
         # update app status with last deployment
         update_app_deployment_status(namespace, name, deployment_uuid, logger)
-        create_helmrelease(name, app_uuid, spec, namespace, tag, logger)
-        return
+        # Trigger a helm release if it's only a config change
+        update_helmrelease(name, app_uuid, spec, namespace, tag, logger)
+        return {'lastDeployment': deployment_uuid}
     api = client.CustomObjectsApi()
     git_info = spec.get('git')
     ref = git_info.get('ref')
@@ -359,11 +370,12 @@ def update_app(spec, name, namespace, logger, labels, status, **kwargs):
             }
         }
     }
-    build_ts = {
-                "name": "SB_TS",
-                "value": str(datetime.datetime.now()),
-    }
-    patch_body['spec']['build']['env'].append(build_ts)
+    # TODO: remove this.
+    # build_ts = {
+    #             "name": "SB_TS",
+    #             "value": str(datetime.datetime.now()),
+    # }
+    # patch_body['spec']['build']['env'].append(build_ts)
     logger.debug(patch_body)
     response = api.patch_namespaced_custom_object(
         group="kpack.io",
@@ -389,8 +401,11 @@ def update_app(spec, name, namespace, logger, labels, status, **kwargs):
 
 
 @kopf.on.update('helm.toolkit.fluxcd.io', 'v2beta1', 'helmreleases', field='status')
-def helm_release_status(name, namespace, labels, status, logger, **kwargs):
+def helm_release_status(name, namespace, spec, diff, labels, status, logger, **kwargs):
     logger.info('--- helm release status ---')
+    deployment_uuid = spec['values']['universal-chart']['generic']['labels']['deployUuid']
+    logger.info(f'deployment UUID: {deployment_uuid}')
+    logger.info(diff)
     logger.info(status)
     history = status.get('history')
     conditions = status.get('conditions')
@@ -400,7 +415,6 @@ def helm_release_status(name, namespace, labels, status, logger, **kwargs):
         if history[0]['status'] == 'failed':
             status = 'failed'
         if status:
-            deployment_uuid = labels.get('shapeblock.com/deployment-uuid')
             app_uuid = labels.get('shapeblock.com/app-uuid')
             data = {
                 'logs': conditions[-1]['message'],
@@ -523,99 +537,82 @@ def get_app_object(name, namespace, logger):
 # TODO: daemon to send status to SB every x hrs
 
 def create_helmrelease(name, app_uuid, app_spec, namespace, tag, logger):
-    # TODO: add label
     api = client.CustomObjectsApi()
-    if app_spec:
-        spec = app_spec
-    else:
-        app = get_app_object(name, namespace, logger)
-        spec = app.get('spec')
     _, image_tag = tag.split(':')
-    logger.debug(f"App spec: {spec}.")
-    app_status = get_app_status(namespace, name, logger)
-    if 'update_app' in app_status.keys():
-        deployment_uuid = app_status['update_app'].get('lastDeployment')
-    else:
-        deployment_uuid = app_status['create_app'].get('lastDeployment')
-    try:
-        resource = api.get_namespaced_custom_object(
-            group="helm.toolkit.fluxcd.io",
-            version="v2beta1",
-            name=name,
-            namespace=namespace,
-            plural="helmreleases",
-        )
-        logger.info("Helm Release exists, patching ...")
-        chart_info = spec.get('chart')
-        chart_values = chart_info.get('values')
-        helm_data = {
-            "metdata": {
-                "labels": {
-                    "shapeblock.com/deployment-uuid": deployment_uuid,
-                }
+    logger.debug(f"App spec: {app_spec}.")
+    chart_info = app_spec.get('chart')
+    chart_name = chart_info.get('name')
+    chart_repo = chart_info.get('repo')
+    chart_version = chart_info.get('version')
+    chart_values = chart_info.get('values')
+    path = os.path.join(os.path.dirname(__file__), 'helmrelease2.yaml')
+    tmpl = open(path, 'rt').read()
+    text = tmpl.format(name=name,
+                    chart_name=chart_name,
+                    chart_repo=chart_repo,
+                    chart_version=chart_version,
+                    app_uuid=app_uuid,
+                    )
+    helm_data = yaml.safe_load(text)
+    helm_data['spec']['values'] = yaml.safe_load(chart_values)
+    helm_data['spec']['values']['universal-chart']['defaultImageTag'] = image_tag
+    deployment_uuid = helm_data['spec']['values']['universal-chart']['generic']['labels']['deployUuid']
+    response = api.create_namespaced_custom_object(
+        group="helm.toolkit.fluxcd.io",
+        version="v2beta1",
+        namespace=namespace,
+        plural="helmreleases",
+        body=helm_data,
+    )
+    logger.info("Helmrelease created.")
+    data = {
+    'logs': 'Helm release created.\n',
+    'status': 'running',
+    'app_uuid': app_uuid,
+    'deployment_uuid': deployment_uuid,
+    }
+    pusher_client.trigger(str(app_uuid), 'deployment', data)
+    response = requests.post(f"{sb_url}/deployments/", json=data)
+
+
+def update_helmrelease(name, app_uuid, app_spec, namespace, tag, logger):
+    api = client.CustomObjectsApi()
+    logger.debug(f"App spec: {app_spec}.")
+    _, image_tag = tag.split(':')
+    logger.info("Helm Release exists, patching ...")
+    chart_info = app_spec.get('chart')
+    chart_values = chart_info.get('values')
+    # TODO: patch deployment UUID
+    helm_data = {
+        "spec": {
+            "chart": {
+                # Add chart version from spec
+                "version": chart_info.get('version'),
             },
-            "spec": {
-                "chart": {
-                    # Add chart version from spec
-                    "version": chart_info.get('version'),
-                },
-                "values": yaml.safe_load(chart_values),
-            }
+            "values": yaml.safe_load(chart_values),
         }
-        helm_data['spec']['values']['universal-chart']['defaultImageTag'] = image_tag
-        response = api.patch_namespaced_custom_object(
-            group="helm.toolkit.fluxcd.io",
-            version="v2beta1",
-            namespace=namespace,
-            name=name,
-            plural="helmreleases",
-            body=helm_data,
-        )
-        logger.info("Helmrelease patched.")
-        data = {
-            'logs': 'Patched Helm Release.\n',
-            'status': 'running',
-            'app_uuid': app_uuid,
-            'deployment_uuid': deployment_uuid,
-        }
-        pusher_client.trigger(str(app_uuid), 'deployment', data)
-        response = requests.post(f"{sb_url}/deployments/", json=data)
-    except ApiException as error:
-        if error.status == 404:
-            chart_info = spec.get('chart')
-            chart_name = chart_info.get('name')
-            chart_repo = chart_info.get('repo')
-            chart_version = chart_info.get('version')
-            chart_values = chart_info.get('values')
-            path = os.path.join(os.path.dirname(__file__), 'helmrelease2.yaml')
-            tmpl = open(path, 'rt').read()
-            text = tmpl.format(name=name,
-                            chart_name=chart_name,
-                            chart_repo=chart_repo,
-                            chart_version=chart_version,
-                            app_uuid=app_uuid,
-                            deployment_uuid=deployment_uuid,
-                            )
-            helm_data = yaml.safe_load(text)
-            helm_data['spec']['values'] = yaml.safe_load(chart_values)
-            helm_data['spec']['values']['universal-chart']['defaultImageTag'] = image_tag
-            response = api.create_namespaced_custom_object(
-                group="helm.toolkit.fluxcd.io",
-                version="v2beta1",
-                namespace=namespace,
-                plural="helmreleases",
-                body=helm_data,
-            )
-            logger.info("Helmrelease created.")
-            data = {
-            'logs': 'Helm release created.\n',
-            'status': 'running',
-            'app_uuid': app_uuid,
-            'deployment_uuid': deployment_uuid,
-            }
-            pusher_client.trigger(str(app_uuid), 'deployment', data)
-            response = requests.post(f"{sb_url}/deployments/", json=data)
-            #response = requests.post(f"{sb_url}/helm-status/", json=data)
+    }
+    helm_data['spec']['values']['universal-chart']['defaultImageTag'] = image_tag
+    deployment_uuid = helm_data['spec']['values']['universal-chart']['generic']['labels']['deployUuid']
+    response = api.patch_namespaced_custom_object(
+        group="helm.toolkit.fluxcd.io",
+        version="v2beta1",
+        namespace=namespace,
+        name=name,
+        plural="helmreleases",
+        body=helm_data,
+    )
+    logger.info(f"Patched custom resource. Response: {response}")
+    #TODO: check response
+    logger.info("Helmrelease patched.")
+    data = {
+        'logs': 'Patched Helm Release.\n',
+        'status': 'running',
+        'app_uuid': app_uuid,
+        'deployment_uuid': deployment_uuid,
+    }
+    pusher_client.trigger(str(app_uuid), 'deployment', data)
+    response = requests.post(f"{sb_url}/deployments/", json=data)
 
 
 def get_app_status(namespace, name, logger):
