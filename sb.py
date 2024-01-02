@@ -8,6 +8,8 @@ from kubernetes import client, config
 import yaml
 from kubernetes.client.rest import ApiException
 import pusher
+from pprint import pformat
+
 
 pusher_client = pusher.Pusher(
   app_id='493518',
@@ -400,7 +402,7 @@ def update_app(spec, name, namespace, logger, labels, status, **kwargs):
     return {'lastDeployment': deployment_uuid}
 
 
-@kopf.on.update('helm.toolkit.fluxcd.io', 'v2beta1', 'helmreleases', field='status')
+@kopf.on.update('helm.toolkit.fluxcd.io', 'helmreleases', field='status')
 def helm_release_status(name, namespace, spec, diff, labels, status, logger, **kwargs):
     logger.info('--- helm release status ---')
     service_uuid = labels.get('shapeblock.com/service-uuid')
@@ -472,7 +474,7 @@ def delete_app(spec, name, namespace, labels, logger, **kwargs):
     try:
         response = api.delete_namespaced_custom_object(
             group="helm.toolkit.fluxcd.io",
-            version="v2beta1",
+            version="v2beta2",
             name=name,
             namespace=namespace,
             plural="helmreleases",
@@ -581,7 +583,7 @@ def create_helmrelease(name, app_uuid, app_spec, namespace, tag, logger):
     deployment_uuid = helm_data['spec']['values']['universal-chart']['generic']['labels']['deployUuid']
     response = api.create_namespaced_custom_object(
         group="helm.toolkit.fluxcd.io",
-        version="v2beta1",
+        version="v2beta2",
         namespace=namespace,
         plural="helmreleases",
         body=helm_data,
@@ -604,31 +606,47 @@ def update_helmrelease(name, app_uuid, app_spec, namespace, tag, logger):
     logger.info("Helm Release exists, patching ...")
     chart_info = app_spec.get('chart')
     chart_values = chart_info.get('values')
-    # TODO: patch deployment UUID
-    helm_data = {
-        "spec": {
-            "chart": {
-                # Add chart version from spec
-                "version": chart_info.get('version'),
-            },
-            "values": yaml.safe_load(chart_values),
-        }
-    }
+    chart_name = chart_info.get('name')
+    chart_repo = chart_info.get('repo')
+    chart_version = chart_info.get('version')
+
+    # get current resource for resourceVersion
+    current_resource = api.get_namespaced_custom_object(
+        group="helm.toolkit.fluxcd.io",
+        version="v2beta2",
+        namespace=namespace,
+        name=name,
+        plural="helmreleases",
+    )
+
+    resource_version = current_resource['metadata']['resourceVersion']
+
+    path = os.path.join(os.path.dirname(__file__), 'helmrelease2.yaml')
+    tmpl = open(path, 'rt').read()
+    text = tmpl.format(name=name,
+                    chart_name=chart_name,
+                    chart_repo=chart_repo,
+                    chart_version=chart_version,
+                    app_uuid=app_uuid,
+                    )
+    helm_data = yaml.safe_load(text)
+    helm_data['spec']['values'] = yaml.safe_load(chart_values)
     helm_data['spec']['values']['universal-chart']['defaultImageTag'] = image_tag
     deployment_uuid = helm_data['spec']['values']['universal-chart']['generic']['labels']['deployUuid']
-    response = api.patch_namespaced_custom_object(
+    helm_data['metadata']['resourceVersion'] =  resource_version
+    logger.info(pformat(helm_data))
+    response = api.replace_namespaced_custom_object(
         group="helm.toolkit.fluxcd.io",
-        version="v2beta1",
+        version="v2beta2",
         namespace=namespace,
         name=name,
         plural="helmreleases",
         body=helm_data,
     )
-    logger.info(f"Patched custom resource. Response: {response}")
     #TODO: check response
-    logger.info("Helmrelease patched.")
+    logger.info("Helmrelease updated.")
     data = {
-        'logs': 'Patched Helm Release.\n',
+        'logs': 'Updated Helm Release.\n',
         'status': 'running',
         'app_uuid': app_uuid,
         'deployment_uuid': deployment_uuid,
