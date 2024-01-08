@@ -315,6 +315,20 @@ def trigger_helm_release(name, namespace, labels, spec, status, new, logger, **k
         pusher_client.trigger(str(app_uuid), 'deployment', data)
         response = requests.post(f"{sb_url}/deployments/", json=data)
         app_object = get_app_object(app_name, namespace, logger)
+        # Sometimes, last deployment might have failed and helm object might not have created
+        api = client.CustomObjectsApi()
+        try:
+            resource = api.get_namespaced_custom_object(
+                group="helm.toolkit.fluxcd.io",
+                version="v2beta2",
+                name=name,
+                namespace=namespace,
+                plural="helmreleases",
+            )
+        except ApiException as error:
+            if error.status == 404:
+                is_new_app = True
+
         if is_new_app:
             create_helmrelease(name=app_name, app_uuid=app_uuid, app_spec=app_object['spec'], namespace=namespace, tag=tag, logger=logger)
         else:
@@ -417,6 +431,8 @@ def helm_release_status(name, namespace, spec, diff, labels, status, logger, **k
         app_deployment_uuid = app_status['create_app'].get('lastDeployment')
     history = status.get('history')
     conditions = status.get('conditions')
+    if len(history) == 0:
+        return
     if (app_deployment_uuid == deployment_uuid) and (app_status.get('lastDeployedVersion') == history[0]['version']):
         return
     if history and conditions:
