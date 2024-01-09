@@ -1,0 +1,18 @@
+apiVersion: kpack.io/v1alpha2
+kind: Builder
+metadata:
+  name: "{name}"
+  labels:
+    shapeblock.com/app-uuid: "{app_uuid}"
+spec:
+  tag: "{tag}"
+  serviceAccountName: "{service_account}"
+  stack:
+    name: base
+    kind: ClusterStack
+  store:
+    name: paketo-nginx
+    kind: ClusterStore
+  order:
+  - group:
+    - id: paketo-buildpacks/web-servers

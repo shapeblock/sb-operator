@@ -386,12 +386,7 @@ def update_app(spec, name, namespace, logger, labels, status, **kwargs):
             }
         }
     }
-    # TODO: remove this.
-    # build_ts = {
-    #             "name": "SB_TS",
-    #             "value": str(datetime.datetime.now()),
-    # }
-    # patch_body['spec']['build']['env'].append(build_ts)
+    #TODO: don't patch image, trigger a helm release instead if ref before patching is same as new ref
     logger.debug(patch_body)
     response = api.patch_namespaced_custom_object(
         group="kpack.io",
@@ -431,7 +426,7 @@ def helm_release_status(name, namespace, spec, diff, labels, status, logger, **k
         app_deployment_uuid = app_status['create_app'].get('lastDeployment')
     history = status.get('history')
     conditions = status.get('conditions')
-    if len(history) == 0:
+    if not history:
         return
     if (app_deployment_uuid == deployment_uuid) and (app_status.get('lastDeployedVersion') == history[0]['version']):
         return
