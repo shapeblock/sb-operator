@@ -229,11 +229,17 @@ def create_app(spec, name, labels, namespace, logger, **kwargs):
             git_info = spec.get('git')
             repo = git_info.get('repo')
             ref = git_info.get('ref')
+            sub_path = git_info.get('subPath')
             service_account = name
             builder = name
-            path = os.path.join(os.path.dirname(__file__), 'image.yaml')
-            tmpl = open(path, 'rt').read()
-            text = tmpl.format(name=name, tag=tag, service_account=service_account, repo=repo, ref=ref, builder_name=builder, app_uuid=app_uuid)
+            if sub_path:
+                path = os.path.join(os.path.dirname(__file__), 'image_subpath.yaml')
+                tmpl = open(path, 'rt').read()
+                text = tmpl.format(name=name, tag=tag, service_account=service_account, repo=repo, ref=ref, builder_name=builder, app_uuid=app_uuid, sub_path=sub_path)
+            else:
+                path = os.path.join(os.path.dirname(__file__), 'image.yaml')
+                tmpl = open(path, 'rt').read()
+                text = tmpl.format(name=name, tag=tag, service_account=service_account, repo=repo, ref=ref, builder_name=builder, app_uuid=app_uuid)
             data = yaml.safe_load(text)
             chart_info = spec.get('chart')
             build_envs = chart_info.get('build')

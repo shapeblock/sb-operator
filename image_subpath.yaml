@@ -1,0 +1,23 @@
+apiVersion: kpack.io/v1alpha2
+kind: Image
+metadata:
+  annotations:
+  name: "{name}"
+  labels:
+    shapeblock.com/app-uuid: "{app_uuid}"
+spec:
+  builder:
+    kind: Builder
+    name: "{builder_name}"
+  cache:
+    volume:
+      size: "2Gi"
+  failedBuildHistoryLimit: 10
+  imageTaggingStrategy: BuildNumber
+  serviceAccountName: "{service_account}"
+  source:
+    git:
+      revision: "{ref}"
+      url: "{repo}"
+    subPath: "{sub_path}"
+  tag: "{tag}"
