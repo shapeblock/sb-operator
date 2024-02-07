@@ -23,7 +23,42 @@ spec:
     - id: paketo-buildpacks/php-fpm
     - id: paketo-buildpacks/php-nginx
     - id: paketo-buildpacks/php-start
-    #- id: paketo-buildpacks/nodejs
-    #- id: paketo-buildpacks/procfile      
+    - id: fagiani/apt
+    - id: shapeblock-buildpacks/chmod
+  - group:
+    - id: paketo-buildpacks/ca-certificates
+    - id: paketo-buildpacks/php-dist
+    - id: paketo-buildpacks/composer
+    - id: paketo-buildpacks/composer-install
+    - id: paketo-buildpacks/nginx
+    - id: paketo-buildpacks/php-fpm
+    - id: paketo-buildpacks/php-nginx
+    - id: paketo-buildpacks/php-start
+    - id: paketo-buildpacks/nodejs
+    - id: fagiani/apt
+    - id: shapeblock-buildpacks/chmod
+  - group:
+    - id: paketo-buildpacks/ca-certificates
+    - id: paketo-buildpacks/php-dist
+    - id: paketo-buildpacks/composer
+    - id: paketo-buildpacks/composer-install
+    - id: paketo-buildpacks/nginx
+    - id: paketo-buildpacks/php-fpm
+    - id: paketo-buildpacks/php-nginx
+    - id: paketo-buildpacks/php-start
+    - id: paketo-buildpacks/procfile
+    - id: fagiani/apt
+    - id: shapeblock-buildpacks/chmod
+  - group:
+    - id: paketo-buildpacks/ca-certificates
+    - id: paketo-buildpacks/php-dist
+    - id: paketo-buildpacks/composer
+    - id: paketo-buildpacks/composer-install
+    - id: paketo-buildpacks/nginx
+    - id: paketo-buildpacks/php-fpm
+    - id: paketo-buildpacks/php-nginx
+    - id: paketo-buildpacks/php-start
+    - id: paketo-buildpacks/nodejs
+    - id: paketo-buildpacks/procfile
     - id: fagiani/apt
     - id: shapeblock-buildpacks/chmod

@@ -16,3 +16,4 @@ spec:
   order:
   - group:
     - id: paketo-buildpacks/web-servers
+    - id: shapeblock-buildpacks/chmod

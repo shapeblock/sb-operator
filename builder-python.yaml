@@ -16,3 +16,5 @@ spec:
   order:
   - group:
     - id: paketo-buildpacks/python
+    - id: paketo-buildpacks/nodejs
+    - id: shapeblock-buildpacks/chmod

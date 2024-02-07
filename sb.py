@@ -7,19 +7,9 @@ import kopf
 from kubernetes import client, config
 import yaml
 from kubernetes.client.rest import ApiException
-import pusher
 from pprint import pformat
 
 
-pusher_client = pusher.Pusher(
-  app_id='493518',
-  key='0d54c047764d470474af',
-  secret='b6d607c0af8ea2b66b4f',
-  cluster='mt1',
-  ssl=True
-)
-
-CHUNK_SIZE = 5000
 """
 TODO:
 Failure scenarios
@@ -33,22 +23,6 @@ Failure scenarios
 7. helm deploy fails
 8. helm create fails
 """
-
-def trigger_chunked(pusher_client, app_uuid, event, data):
-    chunk_size = CHUNK_SIZE
-    i = 0
-    logs = data.pop('logs')
-
-    while True:
-        iteration = i*chunk_size
-        data['index'] = i
-        data['chunk'] = logs[iteration:iteration + chunk_size],
-        data['final'] = chunk_size*(i+1) >= len(logs)
-        if len(logs[iteration:iteration + chunk_size]):
-            pusher_client.trigger(str(app_uuid), event, data)
-        if i*chunk_size > len(logs):
-            break
-        i=i+1
 
 
 def get_sb_url(sb_url):
@@ -195,7 +169,6 @@ def create_app(spec, name, labels, namespace, logger, **kwargs):
                 }
                 if deployment_uuid:
                     data['deployment_uuid'] = deployment_uuid
-                pusher_client.trigger(str(app_uuid), 'deployment', data)
                 response = requests.post(f"{sb_url}/deployments/", json=data)
                 return
 
@@ -208,7 +181,6 @@ def create_app(spec, name, labels, namespace, logger, **kwargs):
             }
             if deployment_uuid:
                 data['deployment_uuid'] = deployment_uuid
-            pusher_client.trigger(str(app_uuid), 'deployment', data)
             response = requests.post(f"{sb_url}/deployments/", json=data)
             #response = requests.post(f"{sb_url}/helm-status/", json=data)
 
@@ -260,7 +232,6 @@ def create_app(spec, name, labels, namespace, logger, **kwargs):
             'app_uuid': app_uuid,
             'deployment_uuid': deployment_uuid,
             }
-            pusher_client.trigger(str(app_uuid), 'deployment', data)
             response = requests.post(f"{sb_url}/deployments/", json=data)
     return {'lastDeployment': deployment_uuid}
 
@@ -285,11 +256,6 @@ def update_build(spec, status, name, namespace, logger, labels, **kwargs):
     steps_completed = status.get('stepsCompleted')
     if steps_completed:
         data['logs'] = core_v1.read_namespaced_pod_log(namespace=namespace, name=status['podName'], container=steps_completed[-1])
-        if len(data['logs']) > CHUNK_SIZE:
-            trigger_chunked(pusher_client, str(app_uuid), 'chunked-deployment', dict(data))
-        else:
-            if len(data['logs']):
-                pusher_client.trigger(str(app_uuid), 'deployment', data)
         response = requests.post(f"{sb_url}/deployments/", json=data)
 
 @kopf.on.field('kpack.io', 'v1alpha2', 'builds', field='status.conditions')
@@ -306,6 +272,14 @@ def trigger_helm_release(name, namespace, labels, spec, status, new, logger, **k
         is_new_app = False
     else:
         deployment_uuid = app_status['create_app'].get('lastDeployment')
+    steps_completed = status.get('stepsCompleted')
+    rebase = steps_completed and 'rebase' in steps_completed
+    if rebase:
+        app_object = get_app_object(app_name, namespace, logger)
+        logger.info(f"Updating helm release for {app_name} for a rebase.")
+        tag = spec.get('tags')[1]
+        update_helmrelease(name=app_name, app_uuid=app_uuid, app_spec=app_object['spec'], namespace=namespace, tag=tag, logger=logger)
+        return
     status = new[0]
     if status.get('type') == 'Succeeded' and status.get('status') == 'True':
         tag = spec.get('tags')[1]
@@ -318,7 +292,6 @@ def trigger_helm_release(name, namespace, labels, spec, status, new, logger, **k
             'app_uuid': app_uuid,
             'deployment_uuid': deployment_uuid,
         }
-        pusher_client.trigger(str(app_uuid), 'deployment', data)
         response = requests.post(f"{sb_url}/deployments/", json=data)
         app_object = get_app_object(app_name, namespace, logger)
         # Sometimes, last deployment might have failed and helm object might not have created
@@ -348,7 +321,6 @@ def trigger_helm_release(name, namespace, labels, spec, status, new, logger, **k
             'app_uuid': app_uuid,
             'deployment_uuid': deployment_uuid,
         }
-        pusher_client.trigger(str(app_uuid), 'deployment', data)
         response = requests.post(f"{sb_url}/deployments/", json=data)
 
 def get_last_tag(status: Dict):
@@ -394,15 +366,19 @@ def update_app(spec, name, namespace, logger, labels, status, **kwargs):
     }
     #TODO: don't patch image, trigger a helm release instead if ref before patching is same as new ref
     logger.debug(patch_body)
-    response = api.patch_namespaced_custom_object(
-        group="kpack.io",
-        version="v1alpha2",
-        namespace=namespace,
-        name=name,
-        plural="images",
-        body=patch_body,
-    )
-    logger.info("Image patched.")
+    try:
+        response = api.patch_namespaced_custom_object(
+            group="kpack.io",
+            version="v1alpha2",
+            namespace=namespace,
+            name=name,
+            plural="images",
+            body=patch_body,
+        )
+        logger.info("Image patched.")
+    except ApiException as error:
+        if error.status == 404:
+            logger.info(f"Image doesn't exist for {name}.")
     app_uuid = labels.get('shapeblock.com/app-uuid')
     if not app_uuid:
         return
@@ -412,7 +388,6 @@ def update_app(spec, name, namespace, logger, labels, status, **kwargs):
         'app_uuid': app_uuid,
         'deployment_uuid': deployment_uuid,
     }
-    pusher_client.trigger(str(app_uuid), 'deployment', data)
     response = requests.post(f"{sb_url}/deployments/", json=data)
     return {'lastDeployment': deployment_uuid}
 
@@ -450,7 +425,6 @@ def helm_release_status(name, namespace, spec, diff, labels, status, logger, **k
                 'deployment_uuid': deployment_uuid,
             }
             update_app_deployment_status(namespace, name, history[0]['version'], logger)
-            pusher_client.trigger(str(app_uuid), 'deployment', data)
             response = requests.post(f"{sb_url}/deployments/", json=data)
 
 
@@ -598,13 +572,20 @@ def create_helmrelease(name, app_uuid, app_spec, namespace, tag, logger):
     helm_data['spec']['values'] = yaml.safe_load(chart_values)
     helm_data['spec']['values']['universal-chart']['defaultImageTag'] = image_tag
     deployment_uuid = helm_data['spec']['values']['universal-chart']['generic']['labels']['deployUuid']
-    response = api.create_namespaced_custom_object(
-        group="helm.toolkit.fluxcd.io",
-        version="v2beta2",
-        namespace=namespace,
-        plural="helmreleases",
-        body=helm_data,
-    )
+    try:
+        response = api.create_namespaced_custom_object(
+            group="helm.toolkit.fluxcd.io",
+            version="v2beta2",
+            namespace=namespace,
+            plural="helmreleases",
+            body=helm_data,
+        )
+    except ApiException as error:
+        if error.status == 409:
+            logger.error(f"Helm release already exists for {name}.")
+            update_helmrelease(name, app_uuid, app_spec, namespace, tag, logger)
+            return
+
     logger.info("Helmrelease created.")
     data = {
     'logs': 'Helm release created.\n',
@@ -612,7 +593,6 @@ def create_helmrelease(name, app_uuid, app_spec, namespace, tag, logger):
     'app_uuid': app_uuid,
     'deployment_uuid': deployment_uuid,
     }
-    pusher_client.trigger(str(app_uuid), 'deployment', data)
     response = requests.post(f"{sb_url}/deployments/", json=data)
 
 
@@ -668,7 +648,6 @@ def update_helmrelease(name, app_uuid, app_spec, namespace, tag, logger):
         'app_uuid': app_uuid,
         'deployment_uuid': deployment_uuid,
     }
-    pusher_client.trigger(str(app_uuid), 'deployment', data)
     response = requests.post(f"{sb_url}/deployments/", json=data)
 
 
@@ -781,3 +760,8 @@ def update_app_deployment_status(namespace, name, deployed_version, logger):
         logger.info(f"Application {name} patched with deployment status {deployed_version}.")
     except ApiException as error:
         logger.error(f"??? Unable to update deployment status of application {name} in namespace {namespace}.")
+
+#TODO:
+# create_image
+# create_builder
+# create_helmrelease
