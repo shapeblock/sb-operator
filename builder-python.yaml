@@ -18,3 +18,6 @@ spec:
     - id: paketo-buildpacks/python
     - id: paketo-buildpacks/nodejs
     - id: shapeblock-buildpacks/chmod
+  - group:
+    - id: paketo-buildpacks/python
+    - id: shapeblock-buildpacks/chmod

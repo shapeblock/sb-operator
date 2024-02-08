@@ -11,13 +11,13 @@ spec:
     name: base
     kind: ClusterStack
   store:
-    name: paketo-rails
+    name: paketo-go
     kind: ClusterStore
   order:
   - group:
-    - id: paketo-buildpacks/ruby
+    - id: paketo-buildpacks/go
     - id: paketo-buildpacks/nodejs
     - id: shapeblock-buildpacks/chmod
   - group:
-    - id: paketo-buildpacks/ruby
+    - id: paketo-buildpacks/go
     - id: shapeblock-buildpacks/chmod

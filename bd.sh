@@ -1,6 +1,6 @@
 #!/bin/bash -x
 export DOCKER_DEFAULT_PLATFORM=linux/amd64
-version="06-feb-2024-18.53"
+version="08-feb-2024-17.46"
 docker build -t shapeblock/sb-operator:${version} .
 docker push shapeblock/sb-operator:${version}
 # sed 's/__VERSION__/'"$version"'/g' deployment.yaml > /tmp/deployment.yaml
