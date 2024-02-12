@@ -109,6 +109,7 @@ def create_app(spec, name, labels, namespace, logger, **kwargs):
         return
     logger.debug(f"An application is created with spec: {spec}")
     api = client.CustomObjectsApi()
+
     # create service account
     #TODO: handle exception if already created
     # why create a service account? A: if we're dealing with private repos.
@@ -116,6 +117,7 @@ def create_app(spec, name, labels, namespace, logger, **kwargs):
         service_account = create_service_account(name, namespace, logger)
     except:
         logger.debug("Serivce account already exists.")
+
     # add secret to service account if private repo
     git_info = spec.get('git')
     repo = git_info.get('repo')
@@ -132,46 +134,16 @@ def create_app(spec, name, labels, namespace, logger, **kwargs):
             return
     chart_values = yaml.safe_load(spec['chart']['values'])
     deployment_uuid = chart_values['universal-chart']['generic']['labels']['deployUuid']
-    # Create builder
-    try:
-        resource = api.get_namespaced_custom_object(
-            group="kpack.io",
-            version="v1alpha2",
-            name=name,
-            namespace=namespace,
-            plural="builders",
-        )
-        logger.info("Builder exists.")
-    except ApiException as error:
-        if error.status == 404:
-            try:
-                tag = spec.get('tag')
-                stack = spec.get('stack')
-                path = os.path.join(os.path.dirname(__file__), f'builder-{stack}.yaml')
-                tmpl = open(path, 'rt').read()
-                text = tmpl.format(name=name, tag=tag, service_account=name, app_uuid=app_uuid)
-                data = yaml.safe_load(text)
-                response = api.create_namespaced_custom_object(
-                    group="kpack.io",
-                    version="v1alpha2",
-                    namespace=namespace,
-                    plural="builders",
-                    body=data,
-                )
-            except Exception as e:
-                logger.error(e)
-                logger.error("Unable to create builder.")
-                data = {
-                    'logs': 'Unable to create builder.\n',
-                    'status': 'failed',
-                    'app_uuid': app_uuid,
-                    'deployment_uuid': deployment_uuid,
-                }
-                if deployment_uuid:
-                    data['deployment_uuid'] = deployment_uuid
-                response = requests.post(f"{sb_url}/deployments/", json=data)
-                return
+    tag = spec.get('tag')
+    ref = git_info.get('ref')
+    sub_path = git_info.get('subPath')
+    stack = spec.get('stack')
+    chart_info = spec.get('chart')
 
+    # create builder
+    if not builder_exists(name, namespace):
+        try:
+            create_builder(name, namespace, tag, stack, app_uuid)
             logger.info("Builder created.")
             data = {
             'logs': 'Builder created.\n',
@@ -179,60 +151,42 @@ def create_app(spec, name, labels, namespace, logger, **kwargs):
             'app_uuid': app_uuid,
             'deployment_uuid': deployment_uuid,
             }
-            if deployment_uuid:
-                data['deployment_uuid'] = deployment_uuid
             response = requests.post(f"{sb_url}/deployments/", json=data)
-            #response = requests.post(f"{sb_url}/helm-status/", json=data)
+        except Exception as e:
+            logger.error(e)
+            logger.error("Unable to create builder.")
+            data = {
+                'logs': 'Unable to create builder.\n',
+                'status': 'failed',
+                'app_uuid': app_uuid,
+                'deployment_uuid': deployment_uuid,
+            }
+            response = requests.post(f"{sb_url}/deployments/", json=data)
+            return
 
     # create image
-    try:
-        resource = api.get_namespaced_custom_object(
-            group="kpack.io",
-            version="v1alpha2",
-            name=name,
-            namespace=namespace,
-            plural="images",
-        )
-        logger.info("Image exists.")
-    except ApiException as error:
-        if error.status == 404:
-            #TODO: handle exception here
-            tag = spec.get('tag')
-            git_info = spec.get('git')
-            repo = git_info.get('repo')
-            ref = git_info.get('ref')
-            sub_path = git_info.get('subPath')
-            service_account = name
-            builder = name
-            if sub_path:
-                path = os.path.join(os.path.dirname(__file__), 'image_subpath.yaml')
-                tmpl = open(path, 'rt').read()
-                text = tmpl.format(name=name, tag=tag, service_account=service_account, repo=repo, ref=ref, builder_name=builder, app_uuid=app_uuid, sub_path=sub_path)
-            else:
-                path = os.path.join(os.path.dirname(__file__), 'image.yaml')
-                tmpl = open(path, 'rt').read()
-                text = tmpl.format(name=name, tag=tag, service_account=service_account, repo=repo, ref=ref, builder_name=builder, app_uuid=app_uuid)
-            data = yaml.safe_load(text)
-            chart_info = spec.get('chart')
-            build_envs = chart_info.get('build')
-            if build_envs:
-                data['spec']['build'] = {'env' : build_envs}
-            response = api.create_namespaced_custom_object(
-                group="kpack.io",
-                version="v1alpha2",
-                namespace=namespace,
-                plural="images",
-                body=data,
-            )
+    if not image_exists(name, namespace):
+        try:
+            create_image(name, namespace, app_uuid, tag, repo, ref, sub_path, chart_info)
             logger.info("Image created.")
             data = {
             'logs': 'Image created.\n',
             'app_uuid': app_uuid,
             'status': 'running',
-            'app_uuid': app_uuid,
             'deployment_uuid': deployment_uuid,
             }
             response = requests.post(f"{sb_url}/deployments/", json=data)
+        except Exception as e:
+            logger.error(e)
+            logger.error("Unable to create image.")
+            data = {
+                'logs': 'Unable to create image.\n',
+                'status': 'failed',
+                'app_uuid': app_uuid,
+                'deployment_uuid': deployment_uuid,
+            }
+            response = requests.post(f"{sb_url}/deployments/", json=data)
+
     return {'lastDeployment': deployment_uuid}
 
 @kopf.on.update('kpack.io', 'v1alpha2', 'builds')
@@ -246,6 +200,9 @@ def update_build(spec, status, name, namespace, logger, labels, **kwargs):
         deployment_uuid = app_status['update_app'].get('lastDeployment')
     else:
         deployment_uuid = app_status['create_app'].get('lastDeployment')
+
+    if status.get('type') == 'Succeeded' and status.get('status') == 'True':
+        logger.info('BUILD step failed')
     core_v1 = client.CoreV1Api()
     data = {
             'app_uuid': app_uuid,
@@ -273,6 +230,7 @@ def trigger_helm_release(name, namespace, labels, spec, status, new, logger, **k
     else:
         deployment_uuid = app_status['create_app'].get('lastDeployment')
     steps_completed = status.get('stepsCompleted')
+    pod_name = status['podName']
     rebase = steps_completed and 'rebase' in steps_completed
     if rebase:
         app_object = get_app_object(app_name, namespace, logger)
@@ -295,17 +253,7 @@ def trigger_helm_release(name, namespace, labels, spec, status, new, logger, **k
         response = requests.post(f"{sb_url}/deployments/", json=data)
         app_object = get_app_object(app_name, namespace, logger)
         # Sometimes, last deployment might have failed and helm object might not have created
-        api = client.CustomObjectsApi()
-        try:
-            resource = api.get_namespaced_custom_object(
-                group="helm.toolkit.fluxcd.io",
-                version="v2beta2",
-                name=name,
-                namespace=namespace,
-                plural="helmreleases",
-            )
-        except ApiException as error:
-            if error.status == 404:
+        if not helmrelease_exists(name, namespace):
                 is_new_app = True
 
         if is_new_app:
@@ -315,19 +263,44 @@ def trigger_helm_release(name, namespace, labels, spec, status, new, logger, **k
         # Update the latest image tag in app status
         update_app_status(namespace, app_name, tag, logger)
     if status.get('type') == 'Succeeded' and status.get('status') == 'False':
+        # end logs of failed stage
+
         data = {
             'logs': 'Build stage failed.\n',
             'status': 'failed',
             'app_uuid': app_uuid,
             'deployment_uuid': deployment_uuid,
         }
+
+        logger.info(steps_completed)
+        if steps_completed:
+            previous_step = steps_completed[-1]
+            if previous_step == 'prepare':
+                failed_step = 'analyze'
+            if previous_step == 'analyze':
+                failed_step = 'detect'
+            if previous_step == 'detect':
+                failed_step = 'restore'
+            if previous_step == 'restore':
+                failed_step = 'build'
+            if previous_step == 'build':
+                failed_step = 'export'
+            if previous_step == 'export':
+                failed_step = 'completion'
+
+            logger.info(previous_step)
+            logger.info(failed_step)
+            core_v1 = client.CoreV1Api()
+            failed_step_logs = core_v1.read_namespaced_pod_log(namespace=namespace, name=pod_name, container=failed_step)
+            logger.info(failed_step_logs)
+            data['logs'] += failed_step_logs
         response = requests.post(f"{sb_url}/deployments/", json=data)
 
 def get_last_tag(status: Dict):
     """
     Get last deployed tag from application status.
     """
-    return status['lastTag']
+    return status.get('lastTag')
 
 @kopf.on.update('applications')
 def update_app(spec, name, namespace, logger, labels, status, **kwargs):
@@ -338,8 +311,9 @@ def update_app(spec, name, namespace, logger, labels, status, **kwargs):
     chart_values = yaml.safe_load(spec['chart']['values'])
     deployment_uuid = chart_values['universal-chart']['generic']['labels']['deployUuid']
     deployment_type = labels.get('shapeblock.com/deployment-type')
+    tag = get_last_tag(status)
+
     if deployment_type == 'config':
-        tag = get_last_tag(status)
         # update app with last deployment id
         update_app_deployment_id(namespace, name, deployment_uuid, logger)
         # Trigger a helm release if it's only a config change
@@ -347,38 +321,77 @@ def update_app(spec, name, namespace, logger, labels, status, **kwargs):
         return {'lastDeployment': deployment_uuid}
     api = client.CustomObjectsApi()
     git_info = spec.get('git')
+    repo = git_info.get('repo')
     ref = git_info.get('ref')
     chart_info = spec.get('chart')
+    sub_path = git_info.get('subPath')
+    stack = spec.get('stack')
     build_envs = chart_info.get('build')
-    # TODO: Create image and build if it doesn't exist already
-    # If build config change, add a build env var. It is harmless and triggers a new build.
-    patch_body = {
-        "spec": {
-            "source": {
-                "git": {
-                    "revision": ref,
+    # TODO: Create build if it doesn't exist already
+
+    if not image_exists(name, namespace):
+        # app status last tag will be empty if image doesn't exist
+        tag = spec.get('tag')
+        try:
+            create_image(name, namespace, app_uuid, tag, repo, ref, sub_path, chart_info)
+            logger.info("Image created.")
+            data = {
+            'logs': 'Image created.\n',
+            'app_uuid': app_uuid,
+            'status': 'running',
+            'app_uuid': app_uuid,
+            'deployment_uuid': deployment_uuid,
+            }
+            response = requests.post(f"{sb_url}/deployments/", json=data)
+        except Exception as e:
+            logger.error(e)
+            logger.error("Unable to create image.")
+            data = {
+                'logs': 'Unable to create image.\n',
+                'status': 'failed',
+                'app_uuid': app_uuid,
+                'deployment_uuid': deployment_uuid,
+            }
+            response = requests.post(f"{sb_url}/deployments/", json=data)
+    else:
+        logger.info(f"Tag status: {tag}")
+        patch_body = {
+            "spec": {
+                "source": {
+                    "git": {
+                        "revision": ref,
+                    }
+                },
+                "build": {
+                    "env": build_envs,
                 }
-            },
-            "build": {
-                "env": build_envs,
             }
         }
-    }
-    #TODO: don't patch image, trigger a helm release instead if ref before patching is same as new ref
-    logger.debug(patch_body)
-    try:
-        response = api.patch_namespaced_custom_object(
-            group="kpack.io",
-            version="v1alpha2",
-            namespace=namespace,
-            name=name,
-            plural="images",
-            body=patch_body,
-        )
-        logger.info("Image patched.")
-    except ApiException as error:
-        if error.status == 404:
-            logger.info(f"Image doesn't exist for {name}.")
+
+        # If build config change, add a build env var. It is harmless and triggers a new build.
+        tag = get_last_tag(status)
+        if not tag:
+            build_ts = {
+                        "name": "SB_TS",
+                        "value": str(datetime.datetime.now()),
+            }
+            patch_body['spec']['build']['env'].append(build_ts)
+
+        #TODO: don't patch image, trigger a helm release instead if ref before patching is same as new ref
+        logger.debug(patch_body)
+        try:
+            response = api.patch_namespaced_custom_object(
+                group="kpack.io",
+                version="v1alpha2",
+                namespace=namespace,
+                name=name,
+                plural="images",
+                body=patch_body,
+            )
+            logger.info("Image patched.")
+        except ApiException as error:
+            logger.info(f"Unable to patch image for {name}: {error}.")
+
     app_uuid = labels.get('shapeblock.com/app-uuid')
     if not app_uuid:
         return
@@ -761,7 +774,90 @@ def update_app_deployment_status(namespace, name, deployed_version, logger):
     except ApiException as error:
         logger.error(f"??? Unable to update deployment status of application {name} in namespace {namespace}.")
 
-#TODO:
-# create_image
-# create_builder
-# create_helmrelease
+
+def builder_exists(name, namespace):
+    api = client.CustomObjectsApi()
+    try:
+        resource = api.get_namespaced_custom_object(
+            group="kpack.io",
+            version="v1alpha2",
+            name=name,
+            namespace=namespace,
+            plural="builders",
+        )
+        return True
+    except ApiException as error:
+        if error.status == 404:
+            return False
+
+
+def create_builder(name, namespace, tag, stack, app_uuid):
+    path = os.path.join(os.path.dirname(__file__), f'builder-{stack}.yaml')
+    tmpl = open(path, 'rt').read()
+    text = tmpl.format(name=name, tag=tag, service_account=name, app_uuid=app_uuid)
+    data = yaml.safe_load(text)
+
+    api = client.CustomObjectsApi()
+    response = api.create_namespaced_custom_object(
+        group="kpack.io",
+        version="v1alpha2",
+        namespace=namespace,
+        plural="builders",
+        body=data,
+    )
+
+
+def image_exists(name, namespace):
+    api = client.CustomObjectsApi()
+    try:
+        resource = api.get_namespaced_custom_object(
+            group="kpack.io",
+            version="v1alpha2",
+            name=name,
+            namespace=namespace,
+            plural="images",
+        )
+        return True
+    except ApiException as error:
+        if error.status == 404:
+            return False
+
+def create_image(name, namespace, app_uuid, tag, repo, ref, sub_path, chart_info):
+    service_account = name
+    builder = name
+    if sub_path:
+        path = os.path.join(os.path.dirname(__file__), 'image_subpath.yaml')
+        tmpl = open(path, 'rt').read()
+        text = tmpl.format(name=name, tag=tag, service_account=service_account, repo=repo, ref=ref, builder_name=builder, app_uuid=app_uuid, sub_path=sub_path)
+    else:
+        path = os.path.join(os.path.dirname(__file__), 'image.yaml')
+        tmpl = open(path, 'rt').read()
+        text = tmpl.format(name=name, tag=tag, service_account=service_account, repo=repo, ref=ref, builder_name=builder, app_uuid=app_uuid)
+    data = yaml.safe_load(text)
+    build_envs = chart_info.get('build')
+    if build_envs:
+        data['spec']['build'] = {'env' : build_envs}
+
+    api = client.CustomObjectsApi()
+    response = api.create_namespaced_custom_object(
+        group="kpack.io",
+        version="v1alpha2",
+        namespace=namespace,
+        plural="images",
+        body=data,
+    )
+
+def helmrelease_exists(name, namespace):
+    api = client.CustomObjectsApi()
+    try:
+        resource = api.get_namespaced_custom_object(
+            group="helm.toolkit.fluxcd.io",
+            version="v2beta2",
+            name=name,
+            namespace=namespace,
+            plural="helmreleases",
+        )
+        return True
+    except ApiException as error:
+        if error.status == 404:
+            return False
