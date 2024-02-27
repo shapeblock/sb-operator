@@ -23,7 +23,7 @@ spec:
     - id: paketo-buildpacks/php-fpm
     - id: paketo-buildpacks/php-nginx
     - id: paketo-buildpacks/php-start
-    - id: fagiani/apt
+    - id: shapeblock-buildpacks/apt
     - id: shapeblock-buildpacks/chmod
   - group:
     - id: paketo-buildpacks/ca-certificates
@@ -35,7 +35,7 @@ spec:
     - id: paketo-buildpacks/php-nginx
     - id: paketo-buildpacks/php-start
     - id: paketo-buildpacks/nodejs
-    - id: fagiani/apt
+    - id: shapeblock-buildpacks/apt
     - id: shapeblock-buildpacks/chmod
   - group:
     - id: paketo-buildpacks/ca-certificates
@@ -47,7 +47,7 @@ spec:
     - id: paketo-buildpacks/php-nginx
     - id: paketo-buildpacks/php-start
     - id: paketo-buildpacks/procfile
-    - id: fagiani/apt
+    - id: shapeblock-buildpacks/apt
     - id: shapeblock-buildpacks/chmod
   - group:
     - id: paketo-buildpacks/ca-certificates
@@ -60,5 +60,5 @@ spec:
     - id: paketo-buildpacks/php-start
     - id: paketo-buildpacks/nodejs
     - id: paketo-buildpacks/procfile
-    - id: fagiani/apt
+    - id: shapeblock-buildpacks/apt
     - id: shapeblock-buildpacks/chmod

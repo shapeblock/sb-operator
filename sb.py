@@ -368,16 +368,44 @@ def update_app(spec, name, namespace, logger, labels, status, **kwargs):
             }
         }
 
+        image = api.get_namespaced_custom_object(
+            group="kpack.io",
+            version="v1alpha2",
+            name=name,
+            namespace=namespace,
+            plural="images",
+        )
         # If build config change, add a build env var. It is harmless and triggers a new build.
         tag = get_last_tag(status)
-        if not tag:
+        if tag:
             build_ts = {
                         "name": "SB_TS",
                         "value": str(datetime.datetime.now()),
             }
-            patch_body['spec']['build']['env'].append(build_ts)
+            if patch_body['spec']['build']['env']:
+                patch_body['spec']['build']['env'].append(build_ts)
+            else:
+                patch_body['spec']['build']['env'] = [build_ts]
 
-        #TODO: don't patch image, trigger a helm release instead if ref before patching is same as new ref
+        else:
+            # don't patch image, trigger a helm release instead if ref before patching is same as new ref
+            current_ref = image['spec']['source']['git']['revision']
+            if current_ref == ref:
+                if helmrelease_exists(name, namespace):
+                    update_helmrelease(name=name, app_uuid=app_uuid, app_spec=spec, namespace=namespace, tag=tag, logger=logger)
+                else:
+                    create_helmrelease(name=name, app_uuid=app_uuid, app_spec=spec, namespace=namespace, tag=tag, logger=logger)
+            data = {
+                'logs': 'No code change.\nUpdating helm release.',
+                'status': 'running',
+                'app_uuid': app_uuid,
+                'deployment_uuid': deployment_uuid,
+            }
+            response = requests.post(f"{sb_url}/deployments/", json=data)
+            return {'lastDeployment': deployment_uuid}
+
+
+
         logger.debug(patch_body)
         try:
             response = api.patch_namespaced_custom_object(
@@ -392,9 +420,6 @@ def update_app(spec, name, namespace, logger, labels, status, **kwargs):
         except ApiException as error:
             logger.info(f"Unable to patch image for {name}: {error}.")
 
-    app_uuid = labels.get('shapeblock.com/app-uuid')
-    if not app_uuid:
-        return
     data = {
         'logs': 'Patched image.\n',
         'status': 'running',
