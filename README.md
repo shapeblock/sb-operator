@@ -75,3 +75,12 @@ echo "little-bird-ae3c-admin:eB?rtK>j@iLd_U+5Gy9=<<P52G3" | base64 # REGISTRY_CR
 docker build --file Dockerfile.kubectl -t shapeblock/sb-operator-init:0.0.1 .
 docker push shapeblock/sb-operator-init:0.0.1
 ```
+
+# TODO 27th March 2024
+- kopf adopt for app dependent resources
+- tests
+- add probe
+- update deployment image to 3.12
+- check RBAC - https://kopf.readthedocs.io/en/stable/deployment/#rbac
+- idempotence - https://kopf.readthedocs.io/en/stable/idempotence/
+

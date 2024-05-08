@@ -132,7 +132,10 @@ def create_app(spec, name, labels, namespace, logger, **kwargs):
         except:
             logger.error(f'??? Unable to update service account for app {name} in project {namespace}.')
             return
-    chart_values = yaml.safe_load(spec['chart']['values'])
+    if isinstance(spec['chart']['values'], str):
+        chart_values = yaml.safe_load(spec['chart']['values'])
+    else:
+        chart_values = spec['chart']['values']
     deployment_uuid = chart_values['universal-chart']['generic']['labels']['deployUuid']
     tag = spec.get('tag')
     ref = git_info.get('ref')
@@ -308,7 +311,10 @@ def update_app(spec, name, namespace, logger, labels, status, **kwargs):
     app_uuid = labels.get('shapeblock.com/app-uuid')
     if not app_uuid:
         return
-    chart_values = yaml.safe_load(spec['chart']['values'])
+    if isinstance(spec['chart']['values'], str):
+        chart_values = yaml.safe_load(spec['chart']['values'])
+    else:
+        chart_values = spec['chart']['values']
     deployment_uuid = chart_values['universal-chart']['generic']['labels']['deployUuid']
     deployment_type = labels.get('shapeblock.com/deployment-type')
     tag = get_last_tag(status)
@@ -607,7 +613,10 @@ def create_helmrelease(name, app_uuid, app_spec, namespace, tag, logger):
                     app_uuid=app_uuid,
                     )
     helm_data = yaml.safe_load(text)
-    helm_data['spec']['values'] = yaml.safe_load(chart_values)
+    if isinstance(chart_values, str):
+        helm_data['spec']['values'] = yaml.safe_load(chart_values)
+    else:
+        helm_data['spec']['values'] = chart_values
     helm_data['spec']['values']['universal-chart']['defaultImageTag'] = image_tag
     deployment_uuid = helm_data['spec']['values']['universal-chart']['generic']['labels']['deployUuid']
     try:
@@ -665,7 +674,10 @@ def update_helmrelease(name, app_uuid, app_spec, namespace, tag, logger):
                     app_uuid=app_uuid,
                     )
     helm_data = yaml.safe_load(text)
-    helm_data['spec']['values'] = yaml.safe_load(chart_values)
+    if isinstance(chart_values, str):
+        helm_data['spec']['values'] = yaml.safe_load(chart_values)
+    else:
+        helm_data['spec']['values'] = chart_values
     helm_data['spec']['values']['universal-chart']['defaultImageTag'] = image_tag
     deployment_uuid = helm_data['spec']['values']['universal-chart']['generic']['labels']['deployUuid']
     helm_data['metadata']['resourceVersion'] =  resource_version

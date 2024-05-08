@@ -1,5 +1,8 @@
 # Changelog
 
+## 2024-05-08
+- App CRD values has become object. Modify operator to handle both strings and operators.
+
 ## 2023-10-02
 - handle exception while creating builder.
 
