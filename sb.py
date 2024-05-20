@@ -216,6 +216,7 @@ def update_build(spec, status, name, namespace, logger, labels, **kwargs):
     steps_completed = status.get('stepsCompleted')
     if steps_completed:
         data['logs'] = core_v1.read_namespaced_pod_log(namespace=namespace, name=status['podName'], container=steps_completed[-1])
+        data['pod'] = status['podName']
         response = requests.post(f"{sb_url}/deployments/", json=data)
 
 @kopf.on.field('kpack.io', 'v1alpha2', 'builds', field='status.conditions')
