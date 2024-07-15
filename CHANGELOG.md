@@ -1,5 +1,12 @@
 # Changelog
 
+## 2024-07-15
+- Add healthcheck probe.
+- Update status of service after deployment.
+
+## 2024-05-20
+- Add pod name in logs.
+
 ## 2024-05-08
 - App CRD values has become object. Modify operator to handle both strings and operators.
 

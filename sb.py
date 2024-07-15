@@ -33,6 +33,11 @@ def get_sb_url(sb_url):
 sb_url = get_sb_url(os.getenv('SB_URL'))
 cluster_id = os.getenv('CLUSTER_ID')
 
+@kopf.on.probe(id='version')
+def get_version(**kwargs):
+    v1 = client.VersionApi()
+    version = v1.get_code()
+    return version.to_dict()
 
 @kopf.on.create('projects')
 def create_project(spec, name, labels, logger, **kwargs):
@@ -441,21 +446,20 @@ def update_app(spec, name, namespace, logger, labels, status, **kwargs):
 def helm_release_status(name, namespace, spec, diff, labels, status, logger, **kwargs):
     logger.info('--- helm release status ---')
     service_uuid = labels.get('shapeblock.com/service-uuid')
-    if service_uuid:
-        return
-    deployment_uuid = spec['values']['universal-chart']['generic']['labels']['deployUuid']
-    logger.info(f'deployment UUID: {deployment_uuid}')
-    app_status = get_app_status(namespace, name, logger)
-    if 'update_app' in app_status.keys():
-        app_deployment_uuid = app_status['update_app'].get('lastDeployment')
-    else:
-        app_deployment_uuid = app_status['create_app'].get('lastDeployment')
     history = status.get('history')
     conditions = status.get('conditions')
-    if not history:
-        return
-    if (app_deployment_uuid == deployment_uuid) and (app_status.get('lastDeployedVersion') == history[0]['version']):
-        return
+    if not service_uuid:
+        deployment_uuid = spec['values']['universal-chart']['generic']['labels']['deployUuid']
+        logger.info(f'deployment UUID: {deployment_uuid}')
+        app_status = get_app_status(namespace, name, logger)
+        if 'update_app' in app_status.keys():
+            app_deployment_uuid = app_status['update_app'].get('lastDeployment')
+        else:
+            app_deployment_uuid = app_status['create_app'].get('lastDeployment')
+        if not history:
+            return
+        if (app_deployment_uuid == deployment_uuid) and (app_status.get('lastDeployedVersion') == history[0]['version']):
+            return
     if history and conditions:
         if history[0]['status'] == 'deployed':
             status = 'success'
@@ -463,14 +467,24 @@ def helm_release_status(name, namespace, spec, diff, labels, status, logger, **k
             status = 'failed'
         if status:
             app_uuid = labels.get('shapeblock.com/app-uuid')
-            data = {
-                'logs': conditions[-1]['message'],
-                'status': status,
-                'app_uuid': app_uuid,
-                'deployment_uuid': deployment_uuid,
-            }
-            update_app_deployment_status(namespace, name, history[0]['version'], logger)
-            response = requests.post(f"{sb_url}/deployments/", json=data)
+            if app_uuid:
+                logger.info(f"Update app deployment status {status} for app {app_uuid}.")
+                data = {
+                    'logs': conditions[-1]['message'],
+                    'status': status,
+                    'app_uuid': app_uuid,
+                    'deployment_uuid': deployment_uuid,
+                }
+                update_app_deployment_status(namespace, name, history[0]['version'], logger)
+                response = requests.post(f"{sb_url}/deployments/", json=data)
+            if service_uuid:
+                logger.info(f"Update service deployment status {status} for service {service_uuid}.")
+                data = {
+                    'logs': conditions[-1]['message'],
+                    'status': status,
+                    'service_uuid': service_uuid,
+                }
+                response = requests.post(f"{sb_url}/service-deployments/", json=data)
 
 
 
