@@ -3,6 +3,8 @@ name: CD prod
 on:
   push:
     branches: [ "master"]
+    tags:
+      - 'v*'
 
 jobs:
   build:
@@ -24,6 +26,15 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GHCR_TOKEN }}
 
+      - name: Determine the version tag
+        id: version_tag
+        run: |
+          if [[ ${{ github.ref_type }} == 'tag' ]]; then
+            echo "TAG_NAME=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
+          else
+            echo "TAG_NAME=${GITHUB_SHA}" >> $GITHUB_ENV
+          fi
+
       - name: Build and push
         uses: docker/build-push-action@v5
         with:
@@ -31,6 +42,6 @@ jobs:
           platforms: linux/amd64
           file: ./Dockerfile
           push: true
-          tags: ghcr.io/shapeblock/operator:${{ github.sha }}
+          tags: ghcr.io/shapeblock/operator:${{ env.TAG_NAME }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

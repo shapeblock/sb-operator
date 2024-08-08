@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.0.0] - 2024-08-08
+- Change NS to shapeblock
+- Allow direct App YML edits.
+
 ## 2024-07-15
 - Add healthcheck probe.
 - Update status of service after deployment.
