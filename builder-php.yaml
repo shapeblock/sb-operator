@@ -11,7 +11,7 @@ spec:
     name: base
     kind: ClusterStack
   store:
-    name: sb-drupal
+    name: sb-php
     kind: ClusterStore
   order:
   - group:

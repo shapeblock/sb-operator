@@ -31,7 +31,6 @@ def get_sb_url(sb_url):
     return f'https://{sb_url}'
 
 sb_url = get_sb_url(os.getenv('SB_URL'))
-cluster_id = os.getenv('CLUSTER_ID')
 
 @kopf.on.probe(id='version')
 def get_version(**kwargs):
@@ -89,7 +88,7 @@ def delete_namespace(name):
 
 def create_registry_credentials(namespace):
     core_v1 = client.CoreV1Api()
-    registry_creds = core_v1.read_namespaced_secret(namespace='default', name='registry-creds')
+    registry_creds = core_v1.read_namespaced_secret(namespace='shapeblock', name='registry-creds')
     body  = client.V1Secret(metadata=client.V1ObjectMeta(name='registry-creds'))
     body.data = registry_creds.data
     body.type = registry_creds.type
