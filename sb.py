@@ -28,6 +28,8 @@ Failure scenarios
 def get_sb_url(sb_url):
     if sb_url.startswith('https://'):
         return sb_url
+    if sb_url.startswith('http://'):
+        return sb_url
     return f'https://{sb_url}'
 
 sb_url = get_sb_url(os.getenv('SB_URL'))
