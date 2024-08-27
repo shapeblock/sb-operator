@@ -62,3 +62,7 @@ spec:
     - id: paketo-buildpacks/procfile
     - id: shapeblock-buildpacks/apt
     - id: shapeblock-buildpacks/chmod
+  - group:
+    - id: paketo-buildpacks/php
+    - id: paketo-buildpacks/nodejs
+    - id: shapeblock-buildpacks/chmod
