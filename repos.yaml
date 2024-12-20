@@ -1,0 +1,17 @@
+apiVersion: source.toolkit.fluxcd.io/v1beta2
+kind: HelmRepository
+metadata:
+  name: shapeblock
+  namespace: shapeblock
+spec:
+  interval: 1m
+  url: https://shapeblock.github.io
+---
+apiVersion: source.toolkit.fluxcd.io/v1beta2
+kind: HelmRepository
+metadata:
+  name: bitnami
+  namespace: shapeblock
+spec:
+  interval: 1m
+  url: https://charts.bitnami.com/bitnami

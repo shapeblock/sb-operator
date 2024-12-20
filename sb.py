@@ -1,13 +1,77 @@
 import os
 import time
 import datetime
-from typing import Dict
+from enum import Enum
+from dataclasses import dataclass
+from typing import Dict, Optional
 import requests
 import kopf
 from kubernetes import client, config
 import yaml
 from kubernetes.client.rest import ApiException
 from pprint import pformat
+
+class BuildStatus(Enum):
+    PENDING = "pending"
+    BUILDING = "building"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+
+class DeployStatus(Enum):
+    PENDING = "pending"
+    DEPLOYING = "deploying"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+
+@dataclass
+class AppStatus:
+    build_status: BuildStatus
+    deploy_status: DeployStatus
+    last_error: Optional[str] = None
+    current_tag: Optional[str] = None
+
+class KubernetesClientManager:
+    _instance = None
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def __init__(self):
+        if not hasattr(self, 'initialized'):
+            self.core_v1 = None
+            self.custom_objects = None
+            self.rbac_v1 = None
+            self.initialize_clients()
+            self.initialized = True
+
+    def initialize_clients(self):
+        try:
+            config.load_incluster_config()
+        except config.ConfigException:
+            config.load_kube_config()
+
+        self.core_v1 = client.CoreV1Api()
+        self.custom_objects = client.CustomObjectsApi()
+        self.rbac_v1 = client.RbacAuthorizationV1Api()
+
+    def refresh_clients(self):
+        self.initialize_clients()
+
+    def execute_with_retry(self, operation, max_retries=3):
+        for attempt in range(max_retries):
+            try:
+                return operation()
+            except ApiException as e:
+                if e.status == 401 and attempt < max_retries - 1:
+                    kopf.info(f"Authentication failed, refreshing clients (attempt {attempt + 1})")
+                    self.refresh_clients()
+                else:
+                    raise
+
+# Initialize the global client manager
+k8s_client = KubernetesClientManager()
 
 
 """
@@ -112,91 +176,123 @@ def create_app(spec, name, labels, namespace, logger, **kwargs):
     app_uuid = labels.get('shapeblock.com/app-uuid')
     if not app_uuid:
         logger.error(f"An application {name} is created in {namespace} without the 'shapeblock.com/app-uuid' label.")
-        return
-    logger.debug(f"An application is created with spec: {spec}")
-    api = client.CustomObjectsApi()
+        raise kopf.PermanentError("Missing app_uuid label")
 
-    # create service account
-    #TODO: handle exception if already created
-    # why create a service account? A: if we're dealing with private repos.
+    deployment_uuid = get_deployment_uuid_from_spec(spec)
+    app_status = AppStatus(
+        build_status=BuildStatus.PENDING,
+        deploy_status=DeployStatus.PENDING
+    )
+
     try:
-        service_account = create_service_account(name, namespace, logger)
-    except:
-        logger.debug("Serivce account already exists.")
-
-    # add secret to service account if private repo
-    git_info = spec.get('git')
-    repo = git_info.get('repo')
-    # TODO: This is not a hard enough check.
-    if repo.startswith('git@'):
-        logger.info('Attaching ssh secret.')
-        core_v1 = client.CoreV1Api()
-        ssh_secret = client.V1ObjectReference(kind='Secret', name=f'{name}-ssh')
-        service_account.secrets.append(ssh_secret)
+        # Create service account with retry
         try:
-            service_account = core_v1.patch_namespaced_service_account(namespace=namespace, name=name, body=client.V1ServiceAccount(secrets=service_account.secrets))
-        except:
-            logger.error(f'??? Unable to update service account for app {name} in project {namespace}.')
-            return
-    if isinstance(spec['chart']['values'], str):
-        chart_values = yaml.safe_load(spec['chart']['values'])
-    else:
-        chart_values = spec['chart']['values']
-    deployment_uuid = chart_values['universal-chart']['generic']['labels']['deployUuid']
-    tag = spec.get('tag')
-    ref = git_info.get('ref')
-    sub_path = git_info.get('subPath')
-    stack = spec.get('stack')
-    chart_info = spec.get('chart')
+            service_account = k8s_client.execute_with_retry(
+                lambda: create_service_account(name, namespace, logger)
+            )
+            logger.info("Service account created successfully")
+        except ApiException as e:
+            if e.status != 409:  # Ignore if already exists
+                raise
 
-    # create builder
-    if not builder_exists(name, namespace):
-        try:
-            create_builder(name, namespace, tag, stack, app_uuid)
-            logger.info("Builder created.")
-            data = {
-            'logs': 'Builder created.\n',
-            'status': 'running',
-            'app_uuid': app_uuid,
-            'deployment_uuid': deployment_uuid,
-            }
-            response = requests.post(f"{sb_url}/deployments/", json=data)
-        except Exception as e:
-            logger.error(e)
-            logger.error("Unable to create builder.")
-            data = {
-                'logs': 'Unable to create builder.\n',
-                'status': 'failed',
-                'app_uuid': app_uuid,
-                'deployment_uuid': deployment_uuid,
-            }
-            response = requests.post(f"{sb_url}/deployments/", json=data)
-            return
+        # Handle git credentials if needed
+        git_info = spec.get('git')
+        if git_info and git_info.get('repo', '').startswith('git@'):
+            try:
+                attach_ssh_secret(name, namespace, service_account, logger)
+            except Exception as e:
+                logger.error(f"Failed to attach SSH secret: {str(e)}")
+                raise
 
-    # create image
-    if not image_exists(name, namespace):
-        try:
-            create_image(name, namespace, app_uuid, tag, repo, ref, sub_path, chart_info)
-            logger.info("Image created.")
-            data = {
-            'logs': 'Image created.\n',
-            'app_uuid': app_uuid,
-            'status': 'running',
-            'deployment_uuid': deployment_uuid,
-            }
-            response = requests.post(f"{sb_url}/deployments/", json=data)
-        except Exception as e:
-            logger.error(e)
-            logger.error("Unable to create image.")
-            data = {
-                'logs': 'Unable to create image.\n',
-                'status': 'failed',
-                'app_uuid': app_uuid,
-                'deployment_uuid': deployment_uuid,
-            }
-            response = requests.post(f"{sb_url}/deployments/", json=data)
+        # Create builder with retry
+        if not builder_exists(name, namespace):
+            try:
+                create_builder_with_retry(name, namespace, spec, logger)
+                logger.info("Builder created successfully")
+                update_status(
+                    app_uuid=app_uuid,
+                    status="running",
+                    logs="Builder created successfully",
+                    deployment_uuid=deployment_uuid
+                )
+            except Exception as e:
+                logger.error(f"Builder creation failed: {str(e)}")
+                update_status(
+                    app_uuid=app_uuid,
+                    status="failed",
+                    logs=f"Builder creation failed: {str(e)}",
+                    deployment_uuid=deployment_uuid
+                )
+                raise kopf.TemporaryError(f"Builder creation failed: {str(e)}", delay=300)
 
-    return {'lastDeployment': deployment_uuid}
+        # Create image with retry
+        if not image_exists(name, namespace):
+            try:
+                create_image_with_retry(
+                    name=name,
+                    namespace=namespace,
+                    app_uuid=app_uuid,
+                    spec=spec,
+                    logger=logger
+                )
+                logger.info("Image created successfully")
+                update_status(
+                    app_uuid=app_uuid,
+                    status="running",
+                    logs="Image created successfully",
+                    deployment_uuid=deployment_uuid
+                )
+            except Exception as e:
+                logger.error(f"Image creation failed: {str(e)}")
+                update_status(
+                    app_uuid=app_uuid,
+                    status="failed",
+                    logs=f"Image creation failed: {str(e)}",
+                    deployment_uuid=deployment_uuid
+                )
+                raise kopf.TemporaryError(f"Image creation failed: {str(e)}", delay=300)
+
+        return {'lastDeployment': deployment_uuid}
+
+    except Exception as e:
+        logger.error(f"Application creation failed: {str(e)}")
+        update_status(
+            app_uuid=app_uuid,
+            status="failed",
+            logs=f"Application creation failed: {str(e)}",
+            deployment_uuid=deployment_uuid
+        )
+        raise kopf.TemporaryError(str(e), delay=300)
+
+def create_builder_with_retry(name, namespace, spec, logger, max_retries=3):
+    """Create builder with retries for transient failures"""
+    def create_builder_operation():
+        return create_builder(
+            name=name,
+            namespace=namespace,
+            tag=spec.get('tag'),
+            stack=spec.get('stack'),
+            app_uuid=spec.get('app_uuid')
+        )
+
+    return k8s_client.execute_with_retry(create_builder_operation)
+
+def create_image_with_retry(name, namespace, app_uuid, spec, logger, max_retries=3):
+    """Create image with retries for transient failures"""
+    git_info = spec.get('git', {})
+    def create_image_operation():
+        return create_image(
+            name=name,
+            namespace=namespace,
+            app_uuid=app_uuid,
+            tag=spec.get('tag'),
+            repo=git_info.get('repo'),
+            ref=git_info.get('ref'),
+            sub_path=git_info.get('subPath'),
+            chart_info=spec.get('chart')
+        )
+
+    return k8s_client.execute_with_retry(create_image_operation)
 
 @kopf.on.update('kpack.io', 'v1alpha2', 'builds')
 def update_build(spec, status, name, namespace, logger, labels, **kwargs):
@@ -227,84 +323,150 @@ def update_build(spec, status, name, namespace, logger, labels, **kwargs):
 
 @kopf.on.field('kpack.io', 'v1alpha2', 'builds', field='status.conditions')
 def trigger_helm_release(name, namespace, labels, spec, status, new, logger, **kwargs):
-    logger.info(f"Update handler for build with status: {status}")
+    """Handle build status changes with improved error handling and status tracking"""
     app_uuid = labels.get('shapeblock.com/app-uuid')
     if not app_uuid:
         return
-    app_name = labels['image.kpack.io/image']
-    app_status = get_app_status(namespace, app_name, logger)
-    is_new_app = True
-    if 'update_app' in app_status.keys():
-        deployment_uuid = app_status['update_app'].get('lastDeployment')
-        is_new_app = False
-    else:
-        deployment_uuid = app_status['create_app'].get('lastDeployment')
-    steps_completed = status.get('stepsCompleted')
-    pod_name = status['podName']
-    rebase = steps_completed and 'rebase' in steps_completed
-    if rebase:
-        app_object = get_app_object(app_name, namespace, logger)
-        logger.info(f"Updating helm release for {app_name} for a rebase.")
-        tag = spec.get('tags')[1]
-        update_helmrelease(name=app_name, app_uuid=app_uuid, app_spec=app_object['spec'], namespace=namespace, tag=tag, logger=logger)
-        return
-    status = new[0]
-    if status.get('type') == 'Succeeded' and status.get('status') == 'True':
-        tag = spec.get('tags')[1]
-        logger.info(f"New image created: {tag}")
-        logger.info(f"Deploying app: {app_name}")
-        # create helmrelease.
-        data = {
-            'logs': 'Triggering Helm release.\n',
-            'status': 'running',
-            'app_uuid': app_uuid,
-            'deployment_uuid': deployment_uuid,
-        }
-        response = requests.post(f"{sb_url}/deployments/", json=data)
-        app_object = get_app_object(app_name, namespace, logger)
-        # Sometimes, last deployment might have failed and helm object might not have created
-        if not helmrelease_exists(name, namespace):
-                is_new_app = True
 
-        if is_new_app:
-            create_helmrelease(name=app_name, app_uuid=app_uuid, app_spec=app_object['spec'], namespace=namespace, tag=tag, logger=logger)
+    try:
+        app_name = labels['image.kpack.io/image']
+        app_status = get_app_status(namespace, app_name, logger)
+        deployment_uuid = get_deployment_uuid_from_status(app_status)
+
+        conditions = new[0]
+        current_condition = conditions.get('type')
+        current_status = conditions.get('status')
+
+        # Handle different build phases
+        if current_condition == 'Succeeded':
+            if current_status == 'True':
+                handle_successful_build(
+                    name=app_name,
+                    namespace=namespace,
+                    app_uuid=app_uuid,
+                    spec=spec,
+                    status=status,
+                    deployment_uuid=deployment_uuid,
+                    logger=logger
+                )
+            elif current_status == 'False':
+                handle_failed_build(
+                    name=app_name,
+                    namespace=namespace,
+                    app_uuid=app_uuid,
+                    spec=spec,
+                    status=status,
+                    deployment_uuid=deployment_uuid,
+                    logger=logger
+                )
         else:
-            update_helmrelease(name=app_name, app_uuid=app_uuid, app_spec=app_object['spec'], namespace=namespace, tag=tag, logger=logger)
-        # Update the latest image tag in app status
-        update_app_status(namespace, app_name, tag, logger)
-    if status.get('type') == 'Succeeded' and status.get('status') == 'False':
-        # end logs of failed stage
+            # Handle build in progress
+            handle_build_progress(
+                name=app_name,
+                namespace=namespace,
+                app_uuid=app_uuid,
+                status=status,
+                deployment_uuid=deployment_uuid,
+                logger=logger
+            )
 
-        data = {
-            'logs': 'Build stage failed.\n',
-            'status': 'failed',
-            'app_uuid': app_uuid,
-            'deployment_uuid': deployment_uuid,
-        }
+    except Exception as e:
+        logger.error(f"Error handling build status: {str(e)}")
+        update_status(
+            app_uuid=app_uuid,
+            status="failed",
+            logs=f"Build status handling failed: {str(e)}",
+            deployment_uuid=deployment_uuid
+        )
 
-        logger.info(steps_completed)
-        if steps_completed:
-            previous_step = steps_completed[-1]
-            if previous_step == 'prepare':
-                failed_step = 'analyze'
-            if previous_step == 'analyze':
-                failed_step = 'detect'
-            if previous_step == 'detect':
-                failed_step = 'restore'
-            if previous_step == 'restore':
-                failed_step = 'build'
-            if previous_step == 'build':
-                failed_step = 'export'
-            if previous_step == 'export':
-                failed_step = 'completion'
+def handle_build_progress(name: str, namespace: str, app_uuid: str,
+                         status: dict, deployment_uuid: str, logger):
+    """Handle build in progress status"""
+    try:
+        # Get current step from status
+        steps_completed = status.get('stepsCompleted', [])
+        current_step = steps_completed[-1] if steps_completed else "Initializing"
 
-            logger.info(previous_step)
-            logger.info(failed_step)
-            core_v1 = client.CoreV1Api()
-            failed_step_logs = core_v1.read_namespaced_pod_log(namespace=namespace, name=pod_name, container=failed_step)
-            logger.info(failed_step_logs)
-            data['logs'] += failed_step_logs
-        response = requests.post(f"{sb_url}/deployments/", json=data)
+        # Try to get logs from the last completed step
+        build_logs = ""
+        if status.get('podName'):
+            try:
+                # Only try to get logs if pod is running
+                pod = k8s_client.execute_with_retry(
+                    lambda: k8s_client.core_v1.read_namespaced_pod(
+                        namespace=namespace,
+                        name=status['podName']
+                    )
+                )
+
+                if pod.status.phase == 'Running':
+                    container = steps_completed[-1] if steps_completed else None
+                    if container:
+                        build_logs = k8s_client.execute_with_retry(
+                            lambda: k8s_client.core_v1.read_namespaced_pod_log(
+                                namespace=namespace,
+                                name=status['podName'],
+                                container=container
+                            )
+                        )
+            except ApiException as e:
+                if e.status != 400:  # Ignore 400 errors during initialization
+                    logger.warning(f"Failed to get build logs: {str(e)}")
+
+        # Update status with progress
+        update_status(
+            app_uuid=app_uuid,
+            status="running",
+            logs=f"Build in progress: {current_step}\n\n{build_logs}",
+            deployment_uuid=deployment_uuid
+        )
+
+    except Exception as e:
+        logger.error(f"Failed to handle build progress: {str(e)}")
+
+def handle_successful_build(name, namespace, app_uuid, spec, status, deployment_uuid, logger):
+    try:
+        tag = spec.get('tags')[1]
+        logger.info(f"Build successful. New image tag: {tag}")
+
+        update_status(
+            app_uuid=app_uuid,
+            status="running",
+            logs="Build completed successfully, initiating deployment",
+            deployment_uuid=deployment_uuid
+        )
+
+        app_object = get_app_object(name, namespace, logger)
+        if not helmrelease_exists(name, namespace):
+            create_helmrelease(
+                name=name,
+                app_uuid=app_uuid,
+                app_spec=app_object['spec'],
+                namespace=namespace,
+                tag=tag,
+                logger=logger
+            )
+        else:
+            update_helmrelease(
+                name=name,
+                app_uuid=app_uuid,
+                app_spec=app_object['spec'],
+                namespace=namespace,
+                tag=tag,
+                logger=logger
+            )
+
+        update_app_status(namespace, name, tag, logger)
+
+    except Exception as e:
+        logger.error(f"Post-build processing failed: {str(e)}")
+        update_status(
+            app_uuid=app_uuid,
+            status="failed",
+            logs=f"Post-build processing failed: {str(e)}",
+            deployment_uuid=deployment_uuid
+        )
+        raise
 
 def get_last_tag(status: Dict):
     """
@@ -314,60 +476,227 @@ def get_last_tag(status: Dict):
 
 @kopf.on.update('applications')
 def update_app(spec, name, namespace, logger, labels, status, **kwargs):
+    """Handle application updates with improved error handling and state management"""
     logger.debug(f"An application is updated with spec: {spec}")
+
+    # Validate required labels
     app_uuid = labels.get('shapeblock.com/app-uuid')
     if not app_uuid:
+        logger.error(f"Application {name} updated without app_uuid label")
         return
+
+    # Parse chart values
     if isinstance(spec['chart']['values'], str):
         chart_values = yaml.safe_load(spec['chart']['values'])
     else:
         chart_values = spec['chart']['values']
+
     deployment_uuid = chart_values['universal-chart']['generic']['labels']['deployUuid']
     deployment_type = labels.get('shapeblock.com/deployment-type')
     tag = get_last_tag(status)
 
-    if deployment_type == 'config':
-        # update app with last deployment id
-        update_app_deployment_id(namespace, name, deployment_uuid, logger)
-        # Trigger a helm release if it's only a config change
-        update_helmrelease(name, app_uuid, spec, namespace, tag, logger)
-        return {'lastDeployment': deployment_uuid}
-    api = client.CustomObjectsApi()
-    git_info = spec.get('git')
-    repo = git_info.get('repo')
-    ref = git_info.get('ref')
-    chart_info = spec.get('chart')
-    sub_path = git_info.get('subPath')
-    stack = spec.get('stack')
-    build_envs = chart_info.get('build')
-    # TODO: Create build if it doesn't exist already
+    try:
+        # Handle config-only updates
+        if deployment_type == 'config':
+            logger.info("Processing configuration-only update")
+            return handle_config_update(
+                namespace=namespace,
+                name=name,
+                app_uuid=app_uuid,
+                deployment_uuid=deployment_uuid,
+                spec=spec,
+                tag=tag,
+                logger=logger
+            )
 
-    if not image_exists(name, namespace):
-        # app status last tag will be empty if image doesn't exist
+        # Handle code/build updates
+        return handle_code_update(
+            namespace=namespace,
+            name=name,
+            app_uuid=app_uuid,
+            deployment_uuid=deployment_uuid,
+            spec=spec,
+            tag=tag,
+            logger=logger
+        )
+
+    except Exception as e:
+        logger.error(f"Failed to process application update: {str(e)}")
+        update_status(
+            app_uuid=app_uuid,
+            status="failed",
+            logs=f"Update failed: {str(e)}",
+            deployment_uuid=deployment_uuid
+        )
+        raise kopf.TemporaryError(f"Update failed: {str(e)}", delay=300)
+
+def handle_config_update(namespace: str, name: str, app_uuid: str, deployment_uuid: str,
+                        spec: dict, tag: str, logger) -> dict:
+    """Handle configuration-only updates"""
+    try:
+        # Update app with last deployment id
+        update_app_deployment_id(namespace, name, deployment_uuid, logger)
+
+        # Update helm release
+        update_helmrelease(
+            name=name,
+            app_uuid=app_uuid,
+            app_spec=spec,
+            namespace=namespace,
+            tag=tag,
+            logger=logger
+        )
+
+        update_status(
+            app_uuid=app_uuid,
+            status="running",
+            logs="Configuration update initiated",
+            deployment_uuid=deployment_uuid
+        )
+
+        return {'lastDeployment': deployment_uuid}
+
+    except Exception as e:
+        logger.error(f"Configuration update failed: {str(e)}")
+        update_status(
+            app_uuid=app_uuid,
+            status="failed",
+            logs=f"Configuration update failed: {str(e)}",
+            deployment_uuid=deployment_uuid
+        )
+        raise
+
+def handle_code_update(namespace: str, name: str, app_uuid: str, deployment_uuid: str,
+                      spec: dict, tag: str, logger) -> dict:
+    """Handle code/build updates"""
+    try:
+        git_info = spec.get('git', {})
+        chart_info = spec.get('chart', {})
+
+        # Check if image exists
+        if not image_exists(name, namespace):
+            return handle_new_image_creation(
+                namespace=namespace,
+                name=name,
+                app_uuid=app_uuid,
+                deployment_uuid=deployment_uuid,
+                spec=spec,
+                logger=logger
+            )
+
+        # Handle existing image update
+        return handle_image_update(
+            namespace=namespace,
+            name=name,
+            app_uuid=app_uuid,
+            deployment_uuid=deployment_uuid,
+            spec=spec,
+            current_tag=tag,
+            logger=logger
+        )
+
+    except Exception as e:
+        logger.error(f"Code update failed: {str(e)}")
+        update_status(
+            app_uuid=app_uuid,
+            status="failed",
+            logs=f"Code update failed: {str(e)}",
+            deployment_uuid=deployment_uuid
+        )
+        raise
+
+def handle_new_image_creation(namespace: str, name: str, app_uuid: str,
+                            deployment_uuid: str, spec: dict, logger) -> dict:
+    """Handle creation of new image when it doesn't exist"""
+    try:
         tag = spec.get('tag')
-        try:
-            create_image(name, namespace, app_uuid, tag, repo, ref, sub_path, chart_info)
-            logger.info("Image created.")
-            data = {
-            'logs': 'Image created.\n',
-            'app_uuid': app_uuid,
-            'status': 'running',
-            'app_uuid': app_uuid,
-            'deployment_uuid': deployment_uuid,
-            }
-            response = requests.post(f"{sb_url}/deployments/", json=data)
-        except Exception as e:
-            logger.error(e)
-            logger.error("Unable to create image.")
-            data = {
-                'logs': 'Unable to create image.\n',
-                'status': 'failed',
-                'app_uuid': app_uuid,
-                'deployment_uuid': deployment_uuid,
-            }
-            response = requests.post(f"{sb_url}/deployments/", json=data)
-    else:
-        logger.info(f"Tag status: {tag}")
+        git_info = spec.get('git', {})
+
+        create_image(
+            name=name,
+            namespace=namespace,
+            app_uuid=app_uuid,
+            tag=tag,
+            repo=git_info.get('repo'),
+            ref=git_info.get('ref'),
+            sub_path=git_info.get('subPath'),
+            chart_info=spec.get('chart')
+        )
+
+        logger.info("Image created successfully")
+        update_status(
+            app_uuid=app_uuid,
+            status="running",
+            logs="Image created and build initiated",
+            deployment_uuid=deployment_uuid
+        )
+
+        return {'lastDeployment': deployment_uuid}
+
+    except Exception as e:
+        logger.error(f"Failed to create new image: {str(e)}")
+        update_status(
+            app_uuid=app_uuid,
+            status="failed",
+            logs=f"Failed to create image: {str(e)}",
+            deployment_uuid=deployment_uuid
+        )
+        raise
+
+def handle_image_update(namespace: str, name: str, app_uuid: str, deployment_uuid: str,
+                       spec: dict, current_tag: str, logger) -> dict:
+    """Handle updates to existing image"""
+    try:
+        git_info = spec.get('git', {})
+        chart_info = spec.get('chart', {})
+        ref = git_info.get('ref')
+        build_envs = chart_info.get('build')
+
+        # Get current image configuration
+        image = k8s_client.execute_with_retry(
+            lambda: k8s_client.custom_objects.get_namespaced_custom_object(
+                group="kpack.io",
+                version="v1alpha2",
+                name=name,
+                namespace=namespace,
+                plural="images",
+            )
+        )
+
+        current_ref = image['spec']['source']['git']['revision']
+
+        # If no code change and has current tag, just update helm release
+        if current_ref == ref and current_tag:
+            logger.info("No code changes detected, updating helm release")
+            if helmrelease_exists(name, namespace):
+                update_helmrelease(
+                    name=name,
+                    app_uuid=app_uuid,
+                    app_spec=spec,
+                    namespace=namespace,
+                    tag=current_tag,
+                    logger=logger
+                )
+            else:
+                create_helmrelease(
+                    name=name,
+                    app_uuid=app_uuid,
+                    app_spec=spec,
+                    namespace=namespace,
+                    tag=current_tag,
+                    logger=logger
+                )
+
+            update_status(
+                app_uuid=app_uuid,
+                status="running",
+                logs="No code change.\nUpdating helm release.",
+                deployment_uuid=deployment_uuid
+            )
+
+            return {'lastDeployment': deployment_uuid}
+
+        # Prepare image update
         patch_body = {
             "spec": {
                 "source": {
@@ -376,52 +705,23 @@ def update_app(spec, name, namespace, logger, labels, status, **kwargs):
                     }
                 },
                 "build": {
-                    "env": build_envs,
+                    "env": build_envs or []
                 }
             }
         }
 
-        image = api.get_namespaced_custom_object(
-            group="kpack.io",
-            version="v1alpha2",
-            name=name,
-            namespace=namespace,
-            plural="images",
-        )
-        # If build config change, add a build env var. It is harmless and triggers a new build.
-        tag = get_last_tag(status)
-        if tag:
+        # Add build timestamp to trigger new build
+        if current_tag:
             build_ts = {
-                        "name": "SB_TS",
-                        "value": str(datetime.datetime.now()),
+                "name": "SB_TS",
+                "value": str(datetime.datetime.now()),
             }
-            if patch_body['spec']['build']['env']:
-                patch_body['spec']['build']['env'].append(build_ts)
-            else:
-                patch_body['spec']['build']['env'] = [build_ts]
+            patch_body['spec']['build']['env'].append(build_ts)
 
-        else:
-            # don't patch image, trigger a helm release instead if ref before patching is same as new ref
-            current_ref = image['spec']['source']['git']['revision']
-            if current_ref == ref:
-                if helmrelease_exists(name, namespace):
-                    update_helmrelease(name=name, app_uuid=app_uuid, app_spec=spec, namespace=namespace, tag=tag, logger=logger)
-                else:
-                    create_helmrelease(name=name, app_uuid=app_uuid, app_spec=spec, namespace=namespace, tag=tag, logger=logger)
-            data = {
-                'logs': 'No code change.\nUpdating helm release.',
-                'status': 'running',
-                'app_uuid': app_uuid,
-                'deployment_uuid': deployment_uuid,
-            }
-            response = requests.post(f"{sb_url}/deployments/", json=data)
-            return {'lastDeployment': deployment_uuid}
-
-
-
-        logger.debug(patch_body)
-        try:
-            response = api.patch_namespaced_custom_object(
+        # Update image
+        logger.debug(f"Updating image with: {patch_body}")
+        k8s_client.execute_with_retry(
+            lambda: k8s_client.custom_objects.patch_namespaced_custom_object(
                 group="kpack.io",
                 version="v1alpha2",
                 namespace=namespace,
@@ -429,66 +729,201 @@ def update_app(spec, name, namespace, logger, labels, status, **kwargs):
                 plural="images",
                 body=patch_body,
             )
-            logger.info("Image patched.")
-        except ApiException as error:
-            logger.info(f"Unable to patch image for {name}: {error}.")
+        )
 
-    data = {
-        'logs': 'Patched image.\n',
-        'status': 'running',
-        'app_uuid': app_uuid,
-        'deployment_uuid': deployment_uuid,
-    }
-    response = requests.post(f"{sb_url}/deployments/", json=data)
-    return {'lastDeployment': deployment_uuid}
+        logger.info("Image updated successfully")
+        update_status(
+            app_uuid=app_uuid,
+            status="running",
+            logs="Image updated, new build initiated",
+            deployment_uuid=deployment_uuid
+        )
 
+        return {'lastDeployment': deployment_uuid}
+
+    except Exception as e:
+        logger.error(f"Failed to update image: {str(e)}")
+        update_status(
+            app_uuid=app_uuid,
+            status="failed",
+            logs=f"Failed to update image: {str(e)}",
+            deployment_uuid=deployment_uuid
+        )
+        raise
 
 @kopf.on.update('helm.toolkit.fluxcd.io', 'helmreleases', field='status')
 def helm_release_status(name, namespace, spec, diff, labels, status, logger, **kwargs):
-    logger.info('--- helm release status ---')
-    service_uuid = labels.get('shapeblock.com/service-uuid')
-    history = status.get('history')
-    conditions = status.get('conditions')
-    if not service_uuid:
-        deployment_uuid = spec['values']['universal-chart']['generic']['labels']['deployUuid']
-        logger.info(f'deployment UUID: {deployment_uuid}')
+    """Handle HelmRelease status updates with improved error handling and status management"""
+    logger.info('Processing helm release status update')
+
+    try:
+        # Handle service deployments
+        service_uuid = labels.get('shapeblock.com/service-uuid')
+        if service_uuid:
+            return handle_service_deployment_status(
+                name=name,
+                namespace=namespace,
+                service_uuid=service_uuid,
+                status=status,
+                logger=logger
+            )
+
+        # Handle application deployments
+        deployment_uuid = get_deployment_uuid_from_helm_values(spec)
+        if not deployment_uuid:
+            logger.warning(f"No deployment UUID found in HelmRelease {name}")
+            return
+
         app_status = get_app_status(namespace, name, logger)
-        if 'update_app' in app_status.keys():
-            app_deployment_uuid = app_status['update_app'].get('lastDeployment')
-        else:
-            app_deployment_uuid = app_status['create_app'].get('lastDeployment')
+        app_deployment_uuid = get_deployment_uuid_from_app_status(app_status)
+
+        # Skip if this is not the latest deployment or version already processed
+        if not should_process_helm_status(
+            deployment_uuid=deployment_uuid,
+            app_deployment_uuid=app_deployment_uuid,
+            app_status=app_status,
+            helm_status=status,
+            logger=logger
+        ):
+            return
+
+        # Process helm release status
+        deployment_status = get_deployment_status_from_helm(status, logger)
+        if deployment_status:
+            handle_deployment_status(
+                name=name,
+                namespace=namespace,
+                app_uuid=labels.get('shapeblock.com/app-uuid'),
+                deployment_uuid=deployment_uuid,
+                status=deployment_status,
+                helm_status=status,
+                logger=logger
+            )
+
+    except Exception as e:
+        logger.error(f"Failed to process helm release status: {str(e)}")
+        # We don't raise here as this is an observation handler
+
+def get_deployment_uuid_from_helm_values(spec: dict) -> Optional[str]:
+    """Extract deployment UUID from helm release spec"""
+    try:
+        return spec['values']['universal-chart']['generic']['labels']['deployUuid']
+    except (KeyError, TypeError):
+        return None
+
+def get_deployment_uuid_from_app_status(app_status: dict) -> Optional[str]:
+    """Extract deployment UUID from application status"""
+    try:
+        if 'update_app' in app_status:
+            return app_status['update_app'].get('lastDeployment')
+        return app_status['create_app'].get('lastDeployment')
+    except (KeyError, TypeError):
+        return None
+
+def should_process_helm_status(deployment_uuid: str, app_deployment_uuid: str,
+                             app_status: dict, helm_status: dict, logger) -> bool:
+    """Determine if helm status should be processed"""
+    # Check if this is the latest deployment
+    if deployment_uuid != app_deployment_uuid:
+        logger.debug(f"Skipping old deployment {deployment_uuid}")
+        return False
+
+    # Check if version already processed
+    history = helm_status.get('history', [])
+    if not history:
+        return False
+
+    current_version = history[0]['version']
+    last_processed_version = app_status.get('lastDeployedVersion')
+
+    if last_processed_version == current_version:
+        logger.debug(f"Version {current_version} already processed")
+        return False
+
+    return True
+
+def get_deployment_status_from_helm(status: dict, logger) -> Optional[str]:
+    """Determine deployment status from helm release status"""
+    try:
+        history = status.get('history', [])
         if not history:
+            return None
+
+        latest_status = history[0]['status']
+        if latest_status == 'deployed':
+            return 'success'
+        elif latest_status == 'failed':
+            return 'failed'
+        return None
+
+    except Exception as e:
+        logger.error(f"Failed to determine deployment status: {str(e)}")
+        return None
+
+def handle_deployment_status(name: str, namespace: str, app_uuid: str,
+                           deployment_uuid: str, status: str,
+                           helm_status: dict, logger):
+    """Handle deployment status updates"""
+    try:
+        # Get status message from conditions
+        conditions = helm_status.get('conditions', [])
+        status_message = conditions[-1]['message'] if conditions else "No status message available"
+
+        # Update deployment status
+        logger.info(f"Updating deployment status to {status} for app {app_uuid}")
+        data = {
+            'logs': status_message,
+            'status': status,
+            'app_uuid': app_uuid,
+            'deployment_uuid': deployment_uuid,
+        }
+
+        # Update backend
+        response = requests.post(f"{sb_url}/deployments/", json=data)
+        response.raise_for_status()
+
+        # Update application status
+        if helm_status.get('history'):
+            update_app_deployment_status(
+                namespace=namespace,
+                name=name,
+                deployed_version=helm_status['history'][0]['version'],
+                logger=logger
+            )
+
+    except Exception as e:
+        logger.error(f"Failed to handle deployment status: {str(e)}")
+
+def handle_service_deployment_status(name: str, namespace: str,
+                                  service_uuid: str, status: dict, logger):
+    """Handle service deployment status updates"""
+    try:
+        history = status.get('history', [])
+        conditions = status.get('conditions', [])
+
+        if not (history and conditions):
             return
-        if (app_deployment_uuid == deployment_uuid) and (app_status.get('lastDeployedVersion') == history[0]['version']):
-            return
-    if history and conditions:
+
         if history[0]['status'] == 'deployed':
-            status = 'success'
-        if history[0]['status'] == 'failed':
-            status = 'failed'
-        if status:
-            app_uuid = labels.get('shapeblock.com/app-uuid')
-            if app_uuid:
-                logger.info(f"Update app deployment status {status} for app {app_uuid}.")
-                data = {
-                    'logs': conditions[-1]['message'],
-                    'status': status,
-                    'app_uuid': app_uuid,
-                    'deployment_uuid': deployment_uuid,
-                }
-                update_app_deployment_status(namespace, name, history[0]['version'], logger)
-                response = requests.post(f"{sb_url}/deployments/", json=data)
-            if service_uuid:
-                logger.info(f"Update service deployment status {status} for service {service_uuid}.")
-                data = {
-                    'logs': conditions[-1]['message'],
-                    'status': status,
-                    'service_uuid': service_uuid,
-                }
-                response = requests.post(f"{sb_url}/service-deployments/", json=data)
+            deployment_status = 'success'
+        elif history[0]['status'] == 'failed':
+            deployment_status = 'failed'
+        else:
+            return
 
+        logger.info(f"Updating service deployment status {deployment_status} for service {service_uuid}")
 
+        data = {
+            'logs': conditions[-1]['message'],
+            'status': deployment_status,
+            'service_uuid': service_uuid,
+        }
 
+        response = requests.post(f"{sb_url}/service-deployments/", json=data)
+        response.raise_for_status()
+
+    except Exception as e:
+        logger.error(f"Failed to handle service deployment status: {str(e)}")
 
 @kopf.on.delete('applications')
 def delete_app(spec, name, namespace, labels, logger, **kwargs):
@@ -593,129 +1028,138 @@ def startup_fn(logger, **kwargs):
 
 
 def get_app_object(name, namespace, logger):
-    api = client.CustomObjectsApi()
+    """Get the Application CR object"""
     try:
-        app = api.get_namespaced_custom_object(
-            group="dev.shapeblock.com",
-            version="v1alpha1",
-            name=name,
-            namespace=namespace,
-            plural="applications",
+        app = k8s_client.execute_with_retry(
+            lambda: k8s_client.custom_objects.get_namespaced_custom_object(
+                group="dev.shapeblock.com",
+                version="v1alpha1",
+                name=name,
+                namespace=namespace,
+                plural="applications",
+            )
         )
-    except ApiException as error:
-        if error.status == 404:
-            logger.error(f"??? Application {name} not found in namespace {namespace}.")
-            return
-    return app
+        return app
+    except ApiException as e:
+        logger.error(f"Failed to get application {name}: {str(e)}")
+        raise
 
 # TODO: daemon to update kpack base images
 # TODO: daemon to send status to SB every x hrs
 
-def create_helmrelease(name, app_uuid, app_spec, namespace, tag, logger):
-    api = client.CustomObjectsApi()
-    _, image_tag = tag.split(':')
-    logger.debug(f"App spec: {app_spec}.")
-    chart_info = app_spec.get('chart')
-    chart_name = chart_info.get('name')
-    chart_repo = chart_info.get('repo')
-    chart_version = chart_info.get('version')
-    chart_values = chart_info.get('values')
-    path = os.path.join(os.path.dirname(__file__), 'helmrelease2.yaml')
-    tmpl = open(path, 'rt').read()
-    text = tmpl.format(name=name,
-                    chart_name=chart_name,
-                    chart_repo=chart_repo,
-                    chart_version=chart_version,
-                    app_uuid=app_uuid,
-                    )
-    helm_data = yaml.safe_load(text)
-    if isinstance(chart_values, str):
-        helm_data['spec']['values'] = yaml.safe_load(chart_values)
-    else:
-        helm_data['spec']['values'] = chart_values
-    helm_data['spec']['values']['universal-chart']['defaultImageTag'] = image_tag
-    deployment_uuid = helm_data['spec']['values']['universal-chart']['generic']['labels']['deployUuid']
+def create_helmrelease(name: str, app_uuid: str, app_spec: Dict, namespace: str, tag: str, logger):
+    """Create HelmRelease using template file"""
     try:
-        response = api.create_namespaced_custom_object(
-            group="helm.toolkit.fluxcd.io",
-            version="v2beta2",
-            namespace=namespace,
-            plural="helmreleases",
-            body=helm_data,
+        # Prepare chart info
+        chart_info = app_spec.get('chart', {})
+        helm_values = chart_info.get('values', {})
+        if isinstance(helm_values, str):
+            helm_values = yaml.safe_load(helm_values)
+
+        # Update image tag in values
+        helm_values['universal-chart']['defaultImageTag'] = tag
+
+        # Read template file
+        template_path = os.path.join(os.path.dirname(__file__), 'helmrelease2.yaml')
+        with open(template_path, 'rt') as f:
+            template = f.read()
+
+        # Format template with values
+        helm_release_yaml = template.format(
+            name=name,
+            app_uuid=app_uuid,
+            chart_name=chart_info.get('name', 'universal-chart'),
+            chart_version=chart_info.get('version', '1.0.0')
         )
-    except ApiException as error:
-        if error.status == 409:
-            logger.error(f"Helm release already exists for {name}.")
-            update_helmrelease(name, app_uuid, app_spec, namespace, tag, logger)
-            return
 
-    logger.info("Helmrelease created.")
-    data = {
-    'logs': 'Helm release created.\n',
-    'status': 'running',
-    'app_uuid': app_uuid,
-    'deployment_uuid': deployment_uuid,
-    }
-    response = requests.post(f"{sb_url}/deployments/", json=data)
+        # Parse YAML to dict
+        helm_release = yaml.safe_load(helm_release_yaml)
 
+        # Add values to spec
+        helm_release['spec']['values'] = helm_values
 
-def update_helmrelease(name, app_uuid, app_spec, namespace, tag, logger):
-    api = client.CustomObjectsApi()
-    logger.debug(f"App spec: {app_spec}.")
-    _, image_tag = tag.split(':')
-    logger.info("Helm Release exists, patching ...")
-    chart_info = app_spec.get('chart')
-    chart_values = chart_info.get('values')
-    chart_name = chart_info.get('name')
-    chart_repo = chart_info.get('repo')
-    chart_version = chart_info.get('version')
+        logger.debug(f"Creating HelmRelease with spec: {helm_release}")
 
-    # get current resource for resourceVersion
-    current_resource = api.get_namespaced_custom_object(
-        group="helm.toolkit.fluxcd.io",
-        version="v2beta2",
-        namespace=namespace,
-        name=name,
-        plural="helmreleases",
-    )
+        k8s_client.execute_with_retry(
+            lambda: k8s_client.custom_objects.create_namespaced_custom_object(
+                group="helm.toolkit.fluxcd.io",
+                version="v2beta2",
+                namespace=namespace,
+                plural="helmreleases",
+                body=helm_release
+            )
+        )
 
-    resource_version = current_resource['metadata']['resourceVersion']
+        logger.info(f"Created HelmRelease {name} in namespace {namespace}")
 
-    path = os.path.join(os.path.dirname(__file__), 'helmrelease2.yaml')
-    tmpl = open(path, 'rt').read()
-    text = tmpl.format(name=name,
-                    chart_name=chart_name,
-                    chart_repo=chart_repo,
-                    chart_version=chart_version,
-                    app_uuid=app_uuid,
-                    )
-    helm_data = yaml.safe_load(text)
-    if isinstance(chart_values, str):
-        helm_data['spec']['values'] = yaml.safe_load(chart_values)
-    else:
-        helm_data['spec']['values'] = chart_values
-    helm_data['spec']['values']['universal-chart']['defaultImageTag'] = image_tag
-    deployment_uuid = helm_data['spec']['values']['universal-chart']['generic']['labels']['deployUuid']
-    helm_data['metadata']['resourceVersion'] =  resource_version
-    logger.info(pformat(helm_data))
-    response = api.replace_namespaced_custom_object(
-        group="helm.toolkit.fluxcd.io",
-        version="v2beta2",
-        namespace=namespace,
-        name=name,
-        plural="helmreleases",
-        body=helm_data,
-    )
-    #TODO: check response
-    logger.info("Helmrelease updated.")
-    data = {
-        'logs': 'Updated Helm Release.\n',
-        'status': 'running',
-        'app_uuid': app_uuid,
-        'deployment_uuid': deployment_uuid,
-    }
-    response = requests.post(f"{sb_url}/deployments/", json=data)
+    except Exception as e:
+        logger.error(f"Failed to create HelmRelease: {str(e)}")
+        raise
 
+def update_helmrelease(name: str, app_uuid: str, app_spec: Dict, namespace: str, tag: str, logger):
+    """Update existing HelmRelease using template"""
+    try:
+        # Get current helm release
+        current_release = k8s_client.execute_with_retry(
+            lambda: k8s_client.custom_objects.get_namespaced_custom_object(
+                group="helm.toolkit.fluxcd.io",
+                version="v2beta2",
+                namespace=namespace,
+                name=name,
+                plural="helmreleases"
+            )
+        )
+
+        # Update values
+        chart_info = app_spec.get('chart', {})
+        helm_values = chart_info.get('values', {})
+
+        if isinstance(helm_values, str):
+            helm_values = yaml.safe_load(helm_values)
+
+        helm_values['universal-chart']['defaultImageTag'] = tag
+
+        # Read template file
+        template_path = os.path.join(os.path.dirname(__file__), 'helmrelease2.yaml')
+        with open(template_path, 'rt') as f:
+            template = f.read()
+
+        # Format template with values
+        helm_release_yaml = template.format(
+            name=name,
+            app_uuid=app_uuid,
+            chart_name=chart_info.get('name', 'universal-chart'),
+            chart_version=chart_info.get('version', '1.0.0')
+        )
+
+        # Parse YAML to dict
+        helm_release = yaml.safe_load(helm_release_yaml)
+
+        # Add values to spec
+        helm_release['spec']['values'] = helm_values
+
+        # Prepare patch (only spec)
+        patch = {
+            'spec': helm_release['spec']
+        }
+
+        # Apply patch
+        k8s_client.execute_with_retry(
+            lambda: k8s_client.custom_objects.patch_namespaced_custom_object(
+                group="helm.toolkit.fluxcd.io",
+                version="v2beta2",
+                namespace=namespace,
+                name=name,
+                plural="helmreleases",
+                body=patch
+            )
+        )
+
+        logger.info(f"Updated HelmRelease {name} in namespace {namespace}")
+
+    except Exception as e:
+        logger.error(f"Failed to update HelmRelease: {str(e)}")
+        raise
 
 def get_app_status(namespace, name, logger):
     api = client.CustomObjectsApi()
@@ -733,33 +1177,34 @@ def get_app_status(namespace, name, logger):
             return
     return app['status']
 
-def update_app_status(namespace, name, tag, logger):
-    api = client.CustomObjectsApi()
+def update_app_status(namespace: str, name: str, tag: Optional[str], logger, error: Optional[str] = None):
+    """Update application CR status"""
     try:
-        app = api.get_namespaced_custom_object(
-            group="dev.shapeblock.com",
-            version="v1alpha1",
-            name=name,
-            namespace=namespace,
-            plural="applications",
+        patch_body = {
+            'status': {
+                'lastTag': tag,
+            }
+        }
+
+        if error:
+            patch_body['status']['lastError'] = error
+
+        k8s_client.execute_with_retry(
+            lambda: k8s_client.custom_objects.patch_namespaced_custom_object_status(
+                group="dev.shapeblock.com",
+                version="v1alpha1",
+                namespace=namespace,
+                name=name,
+                plural="applications",
+                body=patch_body
+            )
         )
-    except ApiException as error:
-        if error.status == 404:
-            logger.error(f"??? Application {name} not found in namespace {namespace}.")
-            return
-    try:
-        patched_body = {'status': {'lastTag' : tag }}
-        response = api.patch_namespaced_custom_object_status(
-            group="dev.shapeblock.com",
-            version="v1alpha1",
-            namespace=namespace,
-            name=name,
-            plural="applications",
-            body=patched_body,
-        )
-        logger.info(f"Application {name} patched with tag {tag}.")
-    except ApiException as error:
-        logger.error(f"??? Unable to update status of application {name} in namespace {namespace}.")
+
+        logger.info(f"Updated application {name} status: tag={tag}, error={error}")
+
+    except Exception as e:
+        logger.error(f"Failed to update application status: {str(e)}")
+        raise
 
 def update_app_deployment_id(namespace, name, deployment, logger):
     api = client.CustomObjectsApi()
@@ -900,17 +1345,163 @@ def create_image(name, namespace, app_uuid, tag, repo, ref, sub_path, chart_info
         body=data,
     )
 
-def helmrelease_exists(name, namespace):
-    api = client.CustomObjectsApi()
+def helmrelease_exists(name: str, namespace: str) -> bool:
+    """Check if HelmRelease exists"""
     try:
-        resource = api.get_namespaced_custom_object(
-            group="helm.toolkit.fluxcd.io",
-            version="v2beta2",
-            name=name,
-            namespace=namespace,
-            plural="helmreleases",
+        k8s_client.execute_with_retry(
+            lambda: k8s_client.custom_objects.get_namespaced_custom_object(
+                group="helm.toolkit.fluxcd.io",
+                version="v2beta2",
+                namespace=namespace,
+                name=name,
+                plural="helmreleases"
+            )
         )
         return True
-    except ApiException as error:
-        if error.status == 404:
+    except ApiException as e:
+        if e.status == 404:
             return False
+        raise
+
+def update_status(app_uuid: str, status: str, logs: str, deployment_uuid: str):
+    """Update application status in the backend"""
+    try:
+        data = {
+            'logs': logs,
+            'status': status,
+            'app_uuid': app_uuid,
+            'deployment_uuid': deployment_uuid,
+        }
+        response = requests.post(f"{sb_url}/deployments/", json=data)
+        response.raise_for_status()
+    except Exception as e:
+        kopf.warn(f"Failed to update status: {str(e)}")
+
+def get_deployment_uuid_from_spec(spec: Dict) -> str:
+    """Extract deployment UUID from spec"""
+    if isinstance(spec['chart']['values'], str):
+        chart_values = yaml.safe_load(spec['chart']['values'])
+    else:
+        chart_values = spec['chart']['values']
+    return chart_values['universal-chart']['generic']['labels']['deployUuid']
+
+def get_deployment_uuid_from_status(status: Dict) -> str:
+    """Extract deployment UUID from status"""
+    if 'update_app' in status:
+        return status['update_app'].get('lastDeployment')
+    return status['create_app'].get('lastDeployment')
+
+def handle_failed_build(name, namespace, app_uuid, spec, status, deployment_uuid, logger):
+    """Handle failed build with improved error detection"""
+    try:
+        # Get failure reason from conditions
+        conditions = status.get('conditions', [])
+        failure_reason = next(
+            (c.get('message') for c in conditions
+             if c.get('type') == 'Succeeded' and c.get('status') == 'False'),
+            "Build failed with unknown reason"
+        )
+
+        logger.error(f"Build failed: {failure_reason}")
+
+        # Try to get build logs
+        build_logs = ""
+        if status.get('podName'):
+            try:
+                # Get pod details first
+                pod = k8s_client.execute_with_retry(
+                    lambda: k8s_client.core_v1.read_namespaced_pod(
+                        namespace=namespace,
+                        name=status['podName']
+                    )
+                )
+
+                # Only try to get logs if pod is running or completed
+                if pod.status.phase in ['Running', 'Succeeded', 'Failed']:
+                    # Try to get logs from the last step that ran
+                    steps_completed = status.get('stepsCompleted', [])
+                    if steps_completed:
+                        build_logs = k8s_client.execute_with_retry(
+                            lambda: k8s_client.core_v1.read_namespaced_pod_log(
+                                namespace=namespace,
+                                name=status['podName'],
+                                container=steps_completed[-1]
+                            )
+                        )
+            except ApiException as e:
+                logger.warning(f"Failed to get build logs: {str(e)}")
+
+        # Update status with failure details
+        update_status(
+            app_uuid=app_uuid,
+            status="failed",
+            logs=f"Build failed: {failure_reason}\n\nBuild logs:\n{build_logs}",
+            deployment_uuid=deployment_uuid
+        )
+
+        # Update application status
+        update_app_status(
+            namespace=namespace,
+            name=name,
+            tag=None,
+            logger=logger,
+            error=failure_reason
+        )
+
+    except Exception as e:
+        logger.error(f"Error handling build failure: {str(e)}")
+        update_status(
+            app_uuid=app_uuid,
+            status="failed",
+            logs=f"Failed to process build failure: {str(e)}",
+            deployment_uuid=deployment_uuid
+        )
+
+def attach_ssh_secret(name, namespace, service_account, logger):
+    """Attach SSH secret to service account for private git repos"""
+    try:
+        # Get SSH secret from shapeblock namespace
+        ssh_secret = k8s_client.execute_with_retry(
+            lambda: k8s_client.core_v1.read_namespaced_secret(
+                namespace='shapeblock',
+                name='git-ssh'
+            )
+        )
+
+        # Create new secret in app namespace
+        secret_name = f"{name}-ssh"
+        body = client.V1Secret(
+            metadata=client.V1ObjectMeta(name=secret_name),
+            data=ssh_secret.data,
+            type=ssh_secret.type
+        )
+
+        try:
+            k8s_client.execute_with_retry(
+                lambda: k8s_client.core_v1.create_namespaced_secret(
+                    namespace=namespace,
+                    body=body
+                )
+            )
+        except ApiException as e:
+            if e.status != 409:  # Ignore if already exists
+                raise
+
+        # Patch service account to use the secret
+        patch_body = {
+            "secrets": [{"name": secret_name}]
+        }
+
+        k8s_client.execute_with_retry(
+            lambda: k8s_client.core_v1.patch_namespaced_service_account(
+                name=name,
+                namespace=namespace,
+                body=patch_body
+            )
+        )
+
+        logger.info(f"SSH secret {secret_name} attached to service account {name}")
+
+    except Exception as e:
+        logger.error(f"Failed to attach SSH secret: {str(e)}")
+        raise

@@ -1,0 +1,96 @@
+apiVersion: dev.shapeblock.com/v1alpha1
+kind: Application
+metadata:
+  name: flask
+  namespace: test-ns
+  labels:
+    shapeblock.com/app-uuid: ba93980e-62dd-4fcb-823c-b49c31ce1498
+    shapeblock.com/deployment-uuid: e1c81ca9-2d7f-474d-b5b4-580f7ddddb8b
+    shapeblock.com/deployment-type: code
+spec:
+  stack: python
+  tag: registry.test1.lakshminp.xyz/test-ns/flask
+  git:
+    repo: https://github.com/badri/flask.git
+    ref: "43d69a0b5730872b8a0c2ced00c0dd718ef5784a"
+
+  chart:
+    repo: https://shapeblock.github.io
+    name: shapeblock
+    version: "0.2.0"
+    values:
+      universal-chart:
+        enabled: true
+        releasePrefix: "flask"
+        envs:
+          PORT: 8080
+          FOO: "barrr"
+        generic:
+          labels:
+            app: python
+            release: flask
+            appUuid: ba93980e-62dd-4fcb-823c-b49c31ce1498
+            deployUuid: e1c81ca9-2d7f-474d-b5b4-580f7ddddb8b
+          usePredefinedAffinity: false
+          extraImagePullSecrets:
+          - name: registry-creds
+
+        defaultImage: registry.test1.lakshminp.xyz/test-ns/flask
+        defaultImageTag: AUTO
+
+
+        deployments:
+          python:
+            podLabels:
+              app: python
+              release: flask
+              appUuid: ba93980e-62dd-4fcb-823c-b49c31ce1498
+              deployment: python
+              deployUuid: e1c81ca9-2d7f-474d-b5b4-580f7ddddb8b
+            replicas: 1
+
+
+            containers:
+            - name: python
+
+              envConfigmaps:
+              - envs
+
+              ports:
+                - containerPort: 8080
+                  name: app
+              resources:
+                limits:
+                  cpu: "1"
+                  memory: "2Gi"
+                requests:
+                  cpu: 5m
+                  memory: 128M
+
+              livenessProbe:
+                tcpSocket:
+                  port: 8080
+        services:
+          python:
+            type: "NodePort"
+            ports:
+            - port: 8080
+            extraSelectorLabels:
+              app: python
+              release: flask
+              appUuid: ba93980e-62dd-4fcb-823c-b49c31ce1498
+              deployment: python
+        ingresses:
+          test-ns-flask.test1.lakshminp.xyz:
+            name: test-ns-flask
+            ingressClassName: nginx
+            annotations:
+              nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+              nginx.ingress.kubernetes.io/ssl-redirect: "true"
+            certManager:
+              issuerType: cluster-issuer
+              issuerName: letsencrypt-prod
+            hosts:
+            - paths:
+              - serviceName: python
+                servicePort: 8080

@@ -1,0 +1,78 @@
+apiVersion: kpack.io/v1alpha2
+kind: ClusterStack
+metadata:
+  name: base
+spec:
+  id: "io.buildpacks.stacks.jammy"
+  buildImage:
+    image: "paketobuildpacks/build-jammy-full"
+  runImage:
+    image: "paketobuildpacks/run-jammy-full"
+---
+apiVersion: kpack.io/v1alpha2
+kind: ClusterStore
+metadata:
+  name: paketo-go
+spec:
+  sources:
+  - image: index.docker.io/paketobuildpacks/go
+  - image: index.docker.io/paketobuildpacks/nodejs
+  - image: index.docker.io/shapeblock/chmod:0.0.5
+---
+apiVersion: kpack.io/v1alpha2
+kind: ClusterStore
+metadata:
+  name: paketo-nginx
+spec:
+  sources:
+  - image: index.docker.io/paketobuildpacks/web-servers
+  - image: index.docker.io/shapeblock/chmod:0.0.5
+---
+apiVersion: kpack.io/v1alpha2
+kind: ClusterStore
+metadata:
+  name: paketo-node
+spec:
+  sources:
+  - image: index.docker.io/paketobuildpacks/nodejs
+  - image: index.docker.io/shapeblock/chmod:0.0.5
+---
+apiVersion: kpack.io/v1alpha2
+kind: ClusterStore
+metadata:
+  name: paketo-python
+spec:
+  sources:
+  - image: index.docker.io/paketobuildpacks/python
+  - image: index.docker.io/paketobuildpacks/nodejs
+  - image: index.docker.io/shapeblock/chmod:0.0.5
+---
+apiVersion: kpack.io/v1alpha2
+kind: ClusterStore
+metadata:
+  name: paketo-ruby
+spec:
+  sources:
+  - image: index.docker.io/paketobuildpacks/ruby
+  - image: index.docker.io/paketobuildpacks/nodejs
+  - image: index.docker.io/shapeblock/chmod:0.0.5
+---
+apiVersion: kpack.io/v1alpha2
+kind: ClusterStore
+metadata:
+  name: sb-php
+spec:
+  sources:
+  - image: index.docker.io/paketobuildpacks/ca-certificates
+  - image: index.docker.io/paketobuildpacks/php
+  - image: index.docker.io/paketobuildpacks/php-dist
+  - image: index.docker.io/paketobuildpacks/composer
+  - image: registry.gitlab.com/shapeblock-buildpacks/composer-install:0.0.1
+  - image: index.docker.io/paketobuildpacks/nginx
+  - image: index.docker.io/paketobuildpacks/php-fpm
+  - image: registry.gitlab.com/shapeblock-buildpacks/php-nginx:0.0.1
+  - image: index.docker.io/paketobuildpacks/php-start
+  - image: index.docker.io/paketobuildpacks/nodejs
+  - image: index.docker.io/paketobuildpacks/procfile
+  - image: index.docker.io/shapeblock/apt:0.3.1
+  - image: index.docker.io/shapeblock/chmod:0.0.5
