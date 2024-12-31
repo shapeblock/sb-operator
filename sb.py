@@ -331,15 +331,46 @@ def trigger_helm_release(name, namespace, labels, spec, status, new, logger, **k
     try:
         app_name = labels['image.kpack.io/image']
         app_status = get_app_status(namespace, app_name, logger)
-        deployment_uuid = get_deployment_uuid_from_status(app_status)
 
+        # Determine if this is a new app or update
+        is_new_app = True
+        if 'update_app' in app_status:
+            deployment_uuid = app_status['update_app'].get('lastDeployment')
+            is_new_app = False
+        else:
+            deployment_uuid = app_status['create_app'].get('lastDeployment')
+
+        # Check for rebase operation first
+        steps_completed = status.get('stepsCompleted', [])
+        if steps_completed and 'rebase' in steps_completed:
+            logger.info(f"Handling rebase operation for {app_name}")
+            app_object = get_app_object(app_name, namespace, logger)
+            tag = spec.get('tags', [])[1] if len(spec.get('tags', [])) > 1 else None
+            if tag:
+                update_helmrelease(
+                    name=app_name,
+                    app_uuid=app_uuid,
+                    app_spec=app_object['spec'],
+                    namespace=namespace,
+                    tag=tag,
+                    logger=logger
+                )
+            return
+
+        # Process build status
         conditions = new[0]
         current_condition = conditions.get('type')
         current_status = conditions.get('status')
+        logger.info(f"Current condition: {current_condition}, Current status: {current_status}")
+        logger.info(f"Status: {status}")
 
         # Handle different build phases
         if current_condition == 'Succeeded':
             if current_status == 'True':
+                # Check if helm release exists for failed previous deployments
+                if not helmrelease_exists(name, namespace):
+                    is_new_app = True
+
                 handle_successful_build(
                     name=app_name,
                     namespace=namespace,
@@ -347,9 +378,24 @@ def trigger_helm_release(name, namespace, labels, spec, status, new, logger, **k
                     spec=spec,
                     status=status,
                     deployment_uuid=deployment_uuid,
+                    is_new_app=is_new_app,
                     logger=logger
                 )
             elif current_status == 'False':
+                # Get the failed step logs
+                failed_step = None
+                if steps_completed:
+                    previous_step = steps_completed[-1]
+                    step_mapping = {
+                        'prepare': 'analyze',
+                        'analyze': 'detect',
+                        'detect': 'restore',
+                        'restore': 'build',
+                        'build': 'export',
+                        'export': 'completion'
+                    }
+                    failed_step = step_mapping.get(previous_step)
+
                 handle_failed_build(
                     name=app_name,
                     namespace=namespace,
@@ -357,6 +403,7 @@ def trigger_helm_release(name, namespace, labels, spec, status, new, logger, **k
                     spec=spec,
                     status=status,
                     deployment_uuid=deployment_uuid,
+                    failed_step=failed_step,
                     logger=logger
                 )
         else:
@@ -424,7 +471,7 @@ def handle_build_progress(name: str, namespace: str, app_uuid: str,
     except Exception as e:
         logger.error(f"Failed to handle build progress: {str(e)}")
 
-def handle_successful_build(name, namespace, app_uuid, spec, status, deployment_uuid, logger):
+def handle_successful_build(name, namespace, app_uuid, spec, status, deployment_uuid, is_new_app, logger):
     try:
         tag = spec.get('tags')[1]
         logger.info(f"Build successful. New image tag: {tag}")
@@ -437,7 +484,7 @@ def handle_successful_build(name, namespace, app_uuid, spec, status, deployment_
         )
 
         app_object = get_app_object(name, namespace, logger)
-        if not helmrelease_exists(name, namespace):
+        if is_new_app:
             create_helmrelease(
                 name=name,
                 app_uuid=app_uuid,
@@ -1051,13 +1098,14 @@ def create_helmrelease(name: str, app_uuid: str, app_spec: Dict, namespace: str,
     """Create HelmRelease using template file"""
     try:
         # Prepare chart info
+        _, image_tag = tag.split(':')
         chart_info = app_spec.get('chart', {})
         helm_values = chart_info.get('values', {})
         if isinstance(helm_values, str):
             helm_values = yaml.safe_load(helm_values)
 
         # Update image tag in values
-        helm_values['universal-chart']['defaultImageTag'] = tag
+        helm_values['universal-chart']['defaultImageTag'] = image_tag
 
         # Read template file
         template_path = os.path.join(os.path.dirname(__file__), 'helmrelease2.yaml')
@@ -1099,6 +1147,7 @@ def create_helmrelease(name: str, app_uuid: str, app_spec: Dict, namespace: str,
 def update_helmrelease(name: str, app_uuid: str, app_spec: Dict, namespace: str, tag: str, logger):
     """Update existing HelmRelease using template"""
     try:
+        _, image_tag = tag.split(':')
         # Get current helm release
         current_release = k8s_client.execute_with_retry(
             lambda: k8s_client.custom_objects.get_namespaced_custom_object(
@@ -1117,7 +1166,7 @@ def update_helmrelease(name: str, app_uuid: str, app_spec: Dict, namespace: str,
         if isinstance(helm_values, str):
             helm_values = yaml.safe_load(helm_values)
 
-        helm_values['universal-chart']['defaultImageTag'] = tag
+        helm_values['universal-chart']['defaultImageTag'] = image_tag
 
         # Read template file
         template_path = os.path.join(os.path.dirname(__file__), 'helmrelease2.yaml')
