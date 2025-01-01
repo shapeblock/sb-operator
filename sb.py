@@ -332,11 +332,8 @@ def trigger_helm_release(name, namespace, labels, spec, status, new, logger, **k
         app_name = labels['image.kpack.io/image']
         app_status = get_app_status(namespace, app_name, logger)
 
-        # Determine if this is a new app or update
-        is_new_app = True
         if 'update_app' in app_status:
             deployment_uuid = app_status['update_app'].get('lastDeployment')
-            is_new_app = False
         else:
             deployment_uuid = app_status['create_app'].get('lastDeployment')
 
@@ -367,10 +364,6 @@ def trigger_helm_release(name, namespace, labels, spec, status, new, logger, **k
         # Handle different build phases
         if current_condition == 'Succeeded':
             if current_status == 'True':
-                # Check if helm release exists for failed previous deployments
-                if not helmrelease_exists(name, namespace):
-                    is_new_app = True
-
                 handle_successful_build(
                     name=app_name,
                     namespace=namespace,
@@ -378,7 +371,6 @@ def trigger_helm_release(name, namespace, labels, spec, status, new, logger, **k
                     spec=spec,
                     status=status,
                     deployment_uuid=deployment_uuid,
-                    is_new_app=is_new_app,
                     logger=logger
                 )
             elif current_status == 'False':
@@ -484,7 +476,7 @@ def handle_successful_build(name, namespace, app_uuid, spec, status, deployment_
         )
 
         app_object = get_app_object(name, namespace, logger)
-        if is_new_app:
+        if not helmrelease_exists(name, namespace):
             create_helmrelease(
                 name=name,
                 app_uuid=app_uuid,
