@@ -463,7 +463,7 @@ def handle_build_progress(name: str, namespace: str, app_uuid: str,
     except Exception as e:
         logger.error(f"Failed to handle build progress: {str(e)}")
 
-def handle_successful_build(name, namespace, app_uuid, spec, status, deployment_uuid, is_new_app, logger):
+def handle_successful_build(name, namespace, app_uuid, spec, status, deployment_uuid, logger):
     try:
         tag = spec.get('tags')[1]
         logger.info(f"Build successful. New image tag: {tag}")
